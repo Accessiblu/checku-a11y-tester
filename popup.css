@@ -1508,7 +1508,7 @@ details[open] .vpat-product-summary::before {
 }
 .skip-link:focus {
   top: 0;
-  outline: 3px solid #FFD700;
+  outline: 3px solid #F18B43; /* Accessiblü Orange — 7:1 against the #000B5E skip-link bg, passes AA */
   outline-offset: 2px;
 }
 
@@ -1561,9 +1561,11 @@ details[open] .vpat-product-summary::before {
   border-radius: 4px;
 }
 
-/* Expand / pop-out button in dark header */
+/* Expand / pop-out button in dark header — Orange reads well against the
+   navy header background (~7:1); everywhere else in this file stays Cobalt
+   because most rings there sit on white, where Orange fails 3:1. */
 .expand-btn:focus-visible {
-  outline: 2px solid white;
+  outline: 2px solid #F18B43;
   outline-offset: 2px;
   border-radius: 5px;
 }
