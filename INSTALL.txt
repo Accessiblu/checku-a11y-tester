@@ -1,0 +1,62 @@
+ACCESSIBLÜ WCAG CHECK Ü — CHROME EXTENSION
+==============================================
+
+HOW TO INSTALL
+--------------
+
+1. Open Google Chrome and go to:
+      chrome://extensions/
+
+2. Turn on DEVELOPER MODE using the toggle in the top-right corner of the page.
+
+3. Click the LOAD UNPACKED button (appears after enabling Developer mode).
+
+4. In the file picker, navigate to and SELECT THIS FOLDER
+   (the folder containing this INSTALL.txt file).
+   Click "Select" or "Open".
+
+5. The Accessiblü icon will appear in your Chrome toolbar.
+   Click it on any webpage to begin testing.
+
+IMPORTANT: Do NOT move, rename, or delete this folder after loading it.
+Chrome loads the extension directly from this location. If you move it,
+the extension will break and you will need to reload it from the new path.
+
+HOW TO USE
+----------
+1. Navigate to any webpage you want to test
+2. Click the Accessiblü toolbar icon (or use the keyboard shortcut — see below)
+3. Select a WCAG conformance level (A, AA, or AAA)
+4. Click "Run Accessibility Test"
+5. Review Violations, Passes, and Needs Review tabs
+6. Use the Tools tab to inspect tab order, headings, images, landmarks, and more
+7. Export your results as JSON, CSV, or a full Accessibility Conformance Report (ACR)
+
+SCREEN READER & KEYBOARD-ONLY USERS
+-------------------------------------
+The extension opens as a Chrome Side Panel by default. Chrome does not move
+keyboard focus into the side panel when it opens, which can make it hard to
+reach with a screen reader.
+
+RECOMMENDED: Use the keyboard shortcut instead of the toolbar icon.
+
+  Ctrl+Shift+A  (Windows / Linux)
+  Cmd+Shift+A   (macOS)
+
+This opens the tool in a FOCUSED standalone window. Your screen reader announces
+the window immediately and keyboard focus lands on the "Run Accessibility Test"
+button — no extra navigation needed.
+
+Customise the shortcut at: chrome://extensions/shortcuts
+
+ALTERNATIVE — side panel workaround:
+After pressing Space on the toolbar icon, press F6 once or twice to cycle
+Chrome's focus regions: Address bar → Page content → Side panel.
+
+TROUBLESHOOTING
+---------------
+- If the extension does not appear after loading, try refreshing chrome://extensions/
+- If a test fails to run, refresh the webpage and try again
+- The extension cannot run on chrome:// pages or the Chrome Web Store
+
+Questions? Contact the Accessiblü team at accessiblu.com/contact/

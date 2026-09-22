@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "Accessiblu: WCAG Accessibility Audit + VPAT",
+  "version": "1.6.0",
+  "description": "Professional WCAG 2.2 audit tool with VPAT matrix and ACR export. Automated testing and reports for developers and QA teams.",
+  "homepage_url": "https://www.accessiblu.com",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "side_panel": {
+    "default_path": "popup.html"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "axe.min.js",
+        "fonts/*.ttf"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "open-accessible-window": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+A",
+        "mac": "Command+Shift+A"
+      },
+      "description": "Open Accessiblü WCAG Check Ü in a focused, keyboard-accessible window"
+    }
+  }
+}
