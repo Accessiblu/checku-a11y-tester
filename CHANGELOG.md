@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.6.1
+
+Small branding tweak to two focus indicators, requested after a JAWS accessibility
+review from Rick Flores (lead auditor).
+
+- Skip link ("Skip to test controls") and the header's "Pop out" button now ring in
+  Accessiblü Orange (`#F18B43`) instead of gold/white. Both sit on the navy
+  (`#000B5E`) header/skip-link background, where Orange passes WCAG AA non-text
+  contrast at ~7:1.
+- Every other focus ring in the tool stays Cobalt (`#0049DB`) intentionally — those
+  rings sit on white, where Orange only reaches 2.47:1, below the 3:1 minimum for
+  UI components. Applying it there would have made this WCAG audit tool fail its
+  own focus-indicator contrast check.
+
+Also confirmed (per Rick's original ask) that the `Cmd/Ctrl+Shift+A` keyboard
+shortcut already opens Check Ü in a focused pop-out window that JAWS picks up
+immediately — no code change needed there, just documented as verified working.
+
 ## 1.6.0
 
 Ports the four checks from the earlier v1.1.0 branch onto this codebase (VPAT Matrix / Pulse / Audit Tools rename baseline), and wires them into the VPAT criteria table properly instead of leaving them as orphaned findings. Also fixes a mislabeled criterion found while doing that wiring.
