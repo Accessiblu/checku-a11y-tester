@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.6.1
+## 1.7.0
 
 Small branding tweak to two focus indicators, requested after a JAWS accessibility
 review from Rick Flores (lead auditor).

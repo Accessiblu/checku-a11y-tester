@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Accessiblu: WCAG Accessibility Audit + VPAT",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "description": "Professional WCAG 2.2 audit tool with VPAT matrix and ACR export. Automated testing and reports for developers and QA teams.",
   "homepage_url": "https://www.accessiblu.com",
   "permissions": [
