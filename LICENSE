@@ -1,0 +1,24 @@
+Copyright (c) 2026 Accessiblü Solutions, LLC. All rights reserved.
+
+This software and its source code are the proprietary property of
+Accessiblü Solutions, LLC. The source is made publicly visible for
+reference and review only.
+
+No license is granted to copy, modify, merge, publish, distribute,
+sublicense, or sell copies of this software, in whole or in part,
+without prior written permission from Accessiblü Solutions, LLC.
+
+The compiled extension is available for use under the terms of the
+Chrome Web Store listing.
+
+THIRD-PARTY COMPONENTS
+
+This repository includes third-party components that are distributed
+under their own licenses, which are not affected by the terms above:
+
+- axe-core (axe.min.js), Copyright (c) Deque Systems, Inc.
+  Mozilla Public License 2.0: https://www.mozilla.org/MPL/2.0/
+- Open Sans (fonts/), SIL Open Font License 1.1:
+  https://openfontlicense.org
+
+Contact: https://www.accessiblu.com/contact/
