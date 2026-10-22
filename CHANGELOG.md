@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Updated the bundled axe-core engine from 4.8.4 to 4.14.0, verified against the npm package checksum. `axe.run` options and WCAG tags used by Check Ü are unchanged. Load unpacked and run a test pass before publishing to the Chrome Web Store.
+- Added README.md and a proprietary LICENSE with third-party notices for axe-core (MPL-2.0) and Open Sans (OFL-1.1).
+
 ## 1.7.0
 
 Small branding tweak to two focus indicators, requested after a JAWS accessibility
