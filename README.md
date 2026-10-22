@@ -6,7 +6,7 @@ I built it because my team at Accessiblü needed a tool that matched how we actu
 
 [Install Ü Check from the Chrome Web Store](https://chromewebstore.google.com/detail/acimaoihbmigdidmhjnheiaaoophmmki)
 
-Current version: 1.15.0. See the [changelog](CHANGELOG.md).
+Current version: 1.16.0. See the [changelog](CHANGELOG.md).
 
 ## What it does
 
@@ -15,6 +15,15 @@ Current version: 1.15.0. See the [changelog](CHANGELOG.md).
 - Runs WCAG 2.2 checks at Level A, AA or AAA using axe-core
 - Sorts results into Violations, Passes and Needs Review
 - Counts elements for each WCAG criterion, for example "17 of 20 elements pass (3 fail)" for 1.3.1, and suggests Partially Supports or Does Not Support from those counts. It never suggests Supports, because automated checks can't confirm that. The auditor makes the call.
+
+### Audit tools for what automation misses
+
+axe-core looks at a snapshot of the page. Some barriers only show up when focus moves or the page updates, so Ü Check adds its own checks:
+
+- Check Focus Indicators finds elements where the browser's focus ring is removed and nothing replaces it (2.4.7 Focus Visible). Chrome only applies focus styles while the page itself has focus, so when Ü Check is in the side panel it reads the page's CSS, including stylesheets from other domains, instead of watching the page.
+- Watch Live Regions lists every `aria-live`, `role="status"`, `role="alert"`, `role="log"` and `output` region and records each update while you use the page, so you can confirm status messages actually fire (4.1.3 Status Messages)
+- `role="application"` regions go to Needs Review, because that role turns off a screen reader's reading keys (2.1.1 Keyboard)
+- Drag-and-drop elements and libraries go to Needs Review, so you can confirm a single-pointer alternative exists (2.5.7 Dragging Movements)
 
 ### Element Inventory
 
@@ -35,7 +44,7 @@ Current version: 1.15.0. See the [changelog](CHANGELOG.md).
 
 - VPAT matrix with per-criterion counts and links to the W3C reference for each criterion
 - Exports to JSON, CSV and a full ACR
-- Inspectors for tab order, headings, landmarks, lists, images, icons, color contrast and ARIA
+- Inspectors for tab order, headings, landmarks, lists, images, icons, color contrast and ARIA, plus the focus indicator and live region tools above
 
 ### Ü Monitor integration
 
