@@ -3,6 +3,11 @@
 Ü Check is the Accessiblü browser extension for WCAG auditing. Versions are the `version` in `manifest.json`.
 After you reload the extension in `chrome://extensions`, the new number shows on its card.
 
+## Unreleased
+
+### Changed
+- Updated the bundled axe-core engine from 4.8.4 to 4.14.0. The `axe.run` options and WCAG tags Ü Check uses are unchanged. Newer rules may report a few findings older versions missed.
+
 ## 1.15.0 (2026-10-19)
 
 ### New
