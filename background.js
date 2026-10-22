@@ -53,6 +53,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  // Focus indicator check: a content script can't read the rules of a
+  // stylesheet served from another domain, so it asks for the CSS text here.
+  // Only http(s) stylesheets, no cookies sent, capped at 3 MB.
+  if (request.action === 'fetchStylesheet') {
+    let url;
+    try { url = new URL(request.url); } catch (e) { sendResponse({ success: false }); return false; }
+    if (!sender.tab || !/^https?:$/.test(url.protocol)) { sendResponse({ success: false }); return false; }
+    fetch(url.href, { credentials: 'omit' })
+      .then(async res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+        if (text.length > 3 * 1024 * 1024) throw new Error('too large');
+        sendResponse({ success: true, text });
+      })
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+
   if (request.action === 'getStoredResults') {
     chrome.storage.local.get(['lastResults', 'lastTestDate'], (data) => sendResponse(data));
     return true;

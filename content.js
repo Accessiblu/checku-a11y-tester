@@ -173,6 +173,35 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ success: true });
     return false;
   }
+
+  if (request.action === 'startLiveRegionWatch') {
+    sendResponse({ success: true, result: startLiveRegionWatch() });
+    return false;
+  }
+
+  if (request.action === 'getLiveRegionLog') {
+    sendResponse({ success: true, result: getLiveRegionLog() });
+    return false;
+  }
+
+  if (request.action === 'stopLiveRegionWatch') {
+    stopLiveRegionWatch();
+    sendResponse({ success: true });
+    return false;
+  }
+
+  if (request.action === 'getFocusIndicators') {
+    getFocusIndicators()
+      .then(result => sendResponse({ success: true, result }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true; // async response
+  }
+
+  if (request.action === 'clearFocusIndicators') {
+    clearBadgeGroup('focus');
+    sendResponse({ success: true });
+    return false;
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -304,6 +333,135 @@ function detectOverlays() {
 }
 
 // ---------------------------------------------------------------------------
+// role="application" review
+//
+// JAWS's own ARIA support documentation calls this out as a named
+// anti-pattern: role="application" hands ALL arrow-key and Escape handling
+// to page JavaScript, disabling the screen reader's normal text-review
+// navigation for that whole region. Correct on a canvas editor or game;
+// silently disabling for a user when misapplied to a block of static text
+// with no visible caret. axe-core has no way to judge "does this region
+// really manage its own keyboard interaction," so this always needs a
+// human — hence it's surfaced as a review item, not a violation.
+// ---------------------------------------------------------------------------
+
+function detectApplicationRegions() {
+  const nodes = [];
+  document.querySelectorAll('[role="application"]').forEach(el => {
+    nodes.push({
+      html: el.outerHTML.substring(0, 200),
+      target: [generateSelector(el)],
+      failureSummary:
+        'role="application" hands arrow-key and Escape handling entirely to page JavaScript. ' +
+        'Confirm this region fully implements its own keyboard interaction model — if it does not ' +
+        '(for example, a block of plain text with no visible caret), remove the role. Screen reader ' +
+        'users otherwise lose the ability to read the region with the arrow keys, with no visual cue ' +
+        'that anything changed.',
+      any: [], all: [], none: []
+    });
+  });
+
+  if (!nodes.length) return null;
+
+  return {
+    id: 'role-application-review',
+    impact: 'moderate',
+    description:
+      'role="application" was found on this page. This role is appropriate only for regions that ' +
+      'implement their own complete keyboard interaction (e.g. a canvas-based editor or game). ' +
+      'Applied to ordinary content, it silently strips a screen reader user\'s ability to review the ' +
+      'region\'s text with the arrow keys.',
+    help: 'role="application" found — verify it manages its own full keyboard interaction',
+    helpUrl: 'https://www.w3.org/TR/wai-aria-1.2/#application',
+    tags: ['cat.keyboard', 'best-practice'],
+    wcagTags: ['wcag211', 'wcag412'],
+    nodes
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Drag interaction review (WCAG 2.5.7 — Dragging Movements)
+//
+// JAWS's own ARIA documentation is explicit that a screen reader only ever
+// narrates a drag operation (grabbable/grabbed/droppable) — it never
+// performs the drag itself, and the keyboard-operable alternative WCAG 2.5.7
+// requires is entirely the page author's responsibility. axe-core can't
+// judge whether that alternative exists or works, so this is a heuristic
+// detector feeding the manual-review queue, not a pass/fail check.
+// ---------------------------------------------------------------------------
+
+const DRAG_LIBRARY_SIGNATURES = [
+  { name: 'Sortable.js',              scriptPatterns: ['sortable.min.js', 'sortable.js', 'sortablejs'], selectors: ['.sortable', '[class*="sortable-"]'] },
+  { name: 'react-beautiful-dnd',      scriptPatterns: ['react-beautiful-dnd'], selectors: ['[data-rbd-droppable-id]', '[data-rbd-draggable-id]'] },
+  { name: 'dnd-kit',                  scriptPatterns: ['dnd-kit'], selectors: ['[data-dnd-kit]'] },
+  { name: 'interact.js',              scriptPatterns: ['interact.min.js', 'interactjs'], selectors: [] },
+  { name: 'jQuery UI Sortable/Draggable', scriptPatterns: ['jquery-ui'], selectors: ['.ui-sortable', '.ui-draggable'] }
+];
+
+function detectDragInteractions() {
+  const nodes = [];
+  const seen = new Set();
+
+  document.querySelectorAll('[draggable="true"]').forEach(el => {
+    if (seen.has(el)) return;
+    seen.add(el);
+    nodes.push({
+      html: el.outerHTML.substring(0, 200),
+      target: [generateSelector(el)],
+      failureSummary:
+        'draggable="true" found. Confirm a full, single-pointer, non-drag alternative exists ' +
+        '(e.g. Move Up / Move Down buttons, a cut-and-paste style flow) and that drag state is ' +
+        'exposed to assistive technology. Screen readers announce drag state — they never perform ' +
+        'the drag or provide the alternative for you.',
+      any: [], all: [], none: []
+    });
+  });
+
+  const scriptSrcs = Array.from(document.querySelectorAll('script[src]'))
+    .map(s => s.getAttribute('src') || '');
+
+  DRAG_LIBRARY_SIGNATURES.forEach(lib => {
+    const scriptMatch = lib.scriptPatterns.find(p =>
+      scriptSrcs.some(src => src.toLowerCase().includes(p.toLowerCase()))
+    );
+    const elementMatch = lib.selectors.find(sel => {
+      try { return document.querySelector(sel); } catch (e) { return false; }
+    });
+    if (!scriptMatch && !elementMatch) return;
+
+    const targetEl = elementMatch ? document.querySelector(elementMatch) : null;
+    if (targetEl && seen.has(targetEl)) return;
+    if (targetEl) seen.add(targetEl);
+
+    nodes.push({
+      html: targetEl ? targetEl.outerHTML.substring(0, 200) : `<!-- ${lib.name} detected via script tag -->`,
+      target: elementMatch ? [elementMatch] : [`script[src*="${scriptMatch}"]`],
+      failureSummary:
+        `${lib.name} drag-and-drop library detected. Confirm a full keyboard alternative and ` +
+        `ARIA drag state (or an APG-compliant pattern) accompany the drag interaction.`,
+      any: [], all: [], none: []
+    });
+  });
+
+  if (!nodes.length) return null;
+
+  return {
+    id: 'drag-interaction-review',
+    impact: 'serious',
+    description:
+      'A drag-and-drop interaction was detected. WCAG 2.5.7 (Dragging Movements) requires every ' +
+      'drag operation to have a single-pointer, non-drag alternative. Screen readers only ever ' +
+      'narrate drag state (grabbable, grabbed, droppable) — they never perform the drag themselves ' +
+      'or supply the required alternative.',
+    help: 'Drag interaction detected — verify a keyboard alternative exists (WCAG 2.5.7)',
+    helpUrl: 'https://www.w3.org/WAI/WCAG22/Understanding/dragging-movements.html',
+    tags: ['cat.sensory-and-visual-cues', 'wcag22aa'],
+    wcagTags: ['wcag257'],
+    nodes
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Main test runner
 // ---------------------------------------------------------------------------
 
@@ -338,18 +496,26 @@ async function runAccessibilityTest(level = 'AA', scope = 'page') {
   const overlayViolations = detectOverlays();
   const violations = [...overlayViolations, ...processResults(results.violations)];
 
+  // Heuristic checks axe-core can't judge on its own. These always need a
+  // human, so they join the Needs Review queue rather than the violations
+  // list. Their rule IDs are registered against WCAG 2.1.1 and 2.5.7 in the
+  // VPAT Matrix's WCAG_2_2_CRITERIA list, so they also feed the per-criterion
+  // counts as "need review". Scoped to the whole document, like overlays.
+  const reviewFindings = [detectApplicationRegions(), detectDragInteractions()].filter(Boolean);
+  const incomplete = [...reviewFindings, ...processResults(results.incomplete)];
+
   return {
     url: window.location.href,
     timestamp: new Date().toISOString(),
     level,
     violations,
     passes: processResults(results.passes),
-    incomplete: processResults(results.incomplete),
+    incomplete,
     inapplicable: processResults(results.inapplicable),
     summary: {
       violations: violations.length,
       passes: results.passes.length,
-      incomplete: results.incomplete.length,
+      incomplete: incomplete.length,
       inapplicable: results.inapplicable.length,
       totalIssues: violations.reduce((sum, v) => sum + v.nodes.length, 0)
     }
@@ -1163,6 +1329,373 @@ function getAriaUsage() {
 
 function clearAriaHighlights() {
   clearBadgeGroup('aria');
+}
+
+// ---------------------------------------------------------------------------
+// Live region audit (WCAG 4.1.3 Status Messages)
+//
+// A static DOM snapshot, which is all axe-core and the ARIA Inspector ever
+// see, cannot tell a live region that announces updates from one that never
+// fires. The classic invisible bug: inserting a fully populated aria-live
+// region in one paint announces nothing, because nothing changed after the
+// region existed for the screen reader to notice. Watching the DOM with a
+// MutationObserver, the way a screen reader effectively does, catches it.
+// ---------------------------------------------------------------------------
+
+const LIVE_REGION_SELECTOR =
+  '[aria-live]:not([aria-live="off"]), [role="status"], [role="alert"], [role="log"], output';
+const LIVE_REGION_LOG_LIMIT = 200;
+
+let liveRegionObserver = null;
+let liveRegionLog = [];
+
+function liveRegionPoliteness(el) {
+  const live = el.getAttribute('aria-live');
+  if (live) return live;
+  const role = el.getAttribute('role');
+  if (role === 'alert') return 'assertive';
+  if (role === 'status' || role === 'log' || el.tagName === 'OUTPUT') return 'polite';
+  return null;
+}
+
+function snapshotLiveRegions() {
+  return Array.from(document.querySelectorAll(LIVE_REGION_SELECTOR)).map(el => {
+    const hasContentAlready = el.textContent.trim().length > 0;
+    return {
+      selector: generateSelector(el),
+      role: el.getAttribute('role') || (el.tagName === 'OUTPUT' ? 'output (implicit status)' : 'aria-live only'),
+      politeness: liveRegionPoliteness(el),
+      hasContentAlready,
+      note: hasContentAlready
+        ? 'Already contains text. If this text was there when the region was created, instead of being injected into an empty region afterward, screen readers will not announce it.'
+        : ''
+    };
+  });
+}
+
+function startLiveRegionWatch() {
+  stopLiveRegionWatch();
+  liveRegionLog = [];
+
+  liveRegionObserver = new MutationObserver(mutations => {
+    const touched = new Set();
+    mutations.forEach(m => {
+      const raw = m.target.nodeType === Node.ELEMENT_NODE ? m.target : m.target.parentElement;
+      const region = raw && raw.closest(LIVE_REGION_SELECTOR);
+      if (region) touched.add(region);
+    });
+    touched.forEach(region => {
+      const newText = region.textContent.trim().substring(0, 150);
+      const selector = generateSelector(region);
+      const last = liveRegionLog[liveRegionLog.length - 1];
+      if (last && last.selector === selector && last.newText === newText) return; // same update, several mutations
+      liveRegionLog.push({ time: new Date().toISOString(), selector, newText, politeness: liveRegionPoliteness(region) });
+      if (liveRegionLog.length > LIVE_REGION_LOG_LIMIT) liveRegionLog.shift();
+    });
+  });
+
+  liveRegionObserver.observe(document.body, { childList: true, characterData: true, subtree: true });
+
+  const staticFindings = snapshotLiveRegions();
+  return { watching: true, regionCount: staticFindings.length, staticFindings };
+}
+
+function stopLiveRegionWatch() {
+  if (liveRegionObserver) {
+    liveRegionObserver.disconnect();
+    liveRegionObserver = null;
+  }
+}
+
+function getLiveRegionLog() {
+  const staticFindings = snapshotLiveRegions();
+  return { watching: !!liveRegionObserver, log: liveRegionLog, staticFindings, regionCount: staticFindings.length };
+}
+
+// ---------------------------------------------------------------------------
+// Focus indicator check (WCAG 2.4.7 Focus Visible)
+//
+// No screen reader can verify this. JAWS and NVDA announce "focused" whether
+// or not anything is visible, because there is no "indicator visible"
+// property in the accessibility tree.
+//
+// Two ways to check, used per element:
+//  1. Live: focus the element and compare its computed style before and
+//     after. Only works while the page itself has focus. When Ü Check is in
+//     the side panel or a pop-out window, the page does not, and Chrome does
+//     not apply :focus styles at all, so a live check would flag everything.
+//  2. Stylesheet: read the page's CSS and work out whether any rule removes
+//     the browser's focus ring for the element, and whether any :focus,
+//     :focus-visible or :focus-within rule draws something else instead.
+//     Stylesheets from other domains are fetched through the extension.
+// The live check is used whenever Chrome actually applies keyboard focus
+// styles to the element. Otherwise the stylesheet check decides.
+// ---------------------------------------------------------------------------
+
+const FOCUS_CHECK_LIMIT = 1500;
+const FOCUS_TOKEN_RE = /:focus-visible|:focus-within|:focus(?![\w-])/g;
+const MOUSE_ONLY_FOCUS_RE = /:not\(\s*(:focus|\.focus-visible|\[data-focus-visible)/;
+const FOCUS_VISUAL_PROPS = [
+  'box-shadow', 'background-color', 'background-image', 'color',
+  'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+  'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+  'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+  'text-decoration-line', 'text-decoration-color', 'text-decoration-thickness', 'text-underline-offset',
+  'transform', 'scale', 'filter', 'opacity'
+];
+const FOCUS_PSEUDO_PROPS = FOCUS_VISUAL_PROPS.concat(['content', 'width', 'height', 'outline-style']);
+
+function cssValueIsVisible(prop, value) {
+  if (!value) return false;
+  const v = value.trim().toLowerCase();
+  if (['initial', 'inherit', 'unset', 'revert', 'revert-layer'].includes(v)) return false;
+  if (prop === 'box-shadow' || prop === 'background-image' || prop === 'transform' ||
+      prop === 'filter' || prop === 'text-decoration-line' || prop.endsWith('-style')) return v !== 'none';
+  if (prop.endsWith('-width')) return parseFloat(v) !== 0;
+  if (prop === 'content') return v !== 'none' && v !== 'normal';
+  return true;
+}
+
+function outlineFromStyle(style) {
+  const s = style.getPropertyValue('outline-style').trim();
+  const w = style.getPropertyValue('outline-width').trim();
+  const c = style.getPropertyValue('outline-color').trim().toLowerCase();
+  if (!s && !w && !c) return null; // rule doesn't touch the outline
+  const suppressed = s === 'none' || s === 'hidden' || (w !== '' && parseFloat(w) === 0) ||
+    c === 'transparent' || /^rgba\([^,]+,[^,]+,[^,]+,\s*0(\.0+)?\s*\)$/.test(c) || /\/\s*0(\.0+)?\s*\)$/.test(c);
+  return suppressed ? 'suppressed' : (s && s !== 'none' ? 'visible' : null);
+}
+
+// Split "a, b:is(c, d)" at top-level commas only.
+function splitSelectorList(text) {
+  const out = []; let depth = 0, cur = '';
+  for (const ch of text) {
+    if (ch === '(' || ch === '[') depth++;
+    if (ch === ')' || ch === ']') depth--;
+    if (ch === ',' && depth === 0) { out.push(cur.trim()); cur = ''; } else cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+// For a selector with a focus pseudo-class, work out which element the focus
+// state belongs to (the "anchor") and whether the styles land on that element
+// itself, or on a descendant or ::before/::after.
+function parseFocusSelector(sel) {
+  // Mouse-focus-only rules, like :focus:not(:focus-visible) or the old focus-visible
+  // polyfill's :focus:not(.focus-visible). These leave the keyboard ring alone.
+  if (MOUSE_ONLY_FOCUS_RE.test(sel)) return null;
+  let last = null, m;
+  FOCUS_TOKEN_RE.lastIndex = 0;
+  while ((m = FOCUS_TOKEN_RE.exec(sel))) last = m;
+  if (!last) return null;
+  let depth = 0, end = sel.length;
+  for (let i = last.index; i < sel.length; i++) {
+    const ch = sel[i];
+    if (ch === '(' || ch === '[') depth++;
+    else if (ch === ')' || ch === ']') depth--;
+    else if (depth === 0 && (/[\s>+~]/.test(ch) || sel.startsWith('::', i))) { end = i; break; }
+  }
+  // Drop the focus pseudo-classes. Where one stood alone (" :focus"), keep a "*" in its place.
+  let anchor = sel.slice(0, end)
+    .replace(FOCUS_TOKEN_RE, (tok, at, str) => (at === 0 || /[\s>+~(,]/.test(str[at - 1]) ? '*' : ''))
+    .replace(/:is\(\s*\)|:where\(\s*\)/g, '')
+    .trim();
+  if (!anchor || /[>+~(,]$/.test(anchor)) anchor += '*';
+  const rest = sel.slice(end).trim();
+  return { anchor, within: last[0] === ':focus-within', onOther: rest.length > 0 };
+}
+
+function safeMatches(el, sel) {
+  try { return el.matches(sel); } catch (e) { return false; }
+}
+function safeClosest(el, sel) {
+  try { return !!el.closest(sel); } catch (e) { return false; }
+}
+
+function collectStyleRules(ruleList, out) {
+  for (const rule of Array.from(ruleList || [])) {
+    if (rule.type === CSSRule.STYLE_RULE) out.push(rule);
+    else if (rule.type === CSSRule.MEDIA_RULE) {
+      if (window.matchMedia(rule.media.mediaText || 'all').matches) collectStyleRules(rule.cssRules, out);
+    } else if (rule.type === CSSRule.SUPPORTS_RULE) {
+      try { if (CSS.supports(rule.conditionText)) collectStyleRules(rule.cssRules, out); } catch (e) { /* skip */ }
+    } else if (rule.cssRules) {
+      collectStyleRules(rule.cssRules, out); // @layer, @container, @scope
+    }
+  }
+}
+
+async function fetchCrossOriginSheet(href) {
+  try {
+    const res = await chrome.runtime.sendMessage({ action: 'fetchStylesheet', url: href });
+    if (!res || !res.success) return null;
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(res.text);
+    return sheet;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function gatherFocusRules() {
+  const rules = [];
+  let readable = 0, fetched = 0;
+  const unreadable = [];
+  const sheets = Array.from(document.styleSheets).concat(Array.from(document.adoptedStyleSheets || []));
+  for (const sheet of sheets) {
+    if (sheet.disabled) continue;
+    if (sheet.media && sheet.media.mediaText && !window.matchMedia(sheet.media.mediaText).matches) continue;
+    let list = null;
+    try { list = sheet.cssRules; readable++; } catch (e) { list = null; }
+    if (!list && sheet.href) {
+      const copy = await fetchCrossOriginSheet(sheet.href);
+      if (copy) { list = copy.cssRules; fetched++; } else unreadable.push(sheet.href);
+    }
+    if (list) collectStyleRules(list, rules);
+  }
+
+  const suppressRules = [];  // rules that turn the outline off, focus state or not
+  const focusRules = [];     // rules that apply only while something is focused
+  rules.forEach(rule => {
+    const outline = outlineFromStyle(rule.style);
+    const selectors = splitSelectorList(rule.selectorText || '');
+    selectors.forEach(sel => {
+      const parsed = sel.includes(':focus') ? parseFocusSelector(sel) : null;
+      if (parsed) {
+        const props = parsed.onOther ? FOCUS_PSEUDO_PROPS : FOCUS_VISUAL_PROPS;
+        const draws = props.some(p => cssValueIsVisible(p, rule.style.getPropertyValue(p))) ||
+          outline === 'visible' || (parsed.onOther && rule.style.length > 0 && outline !== 'suppressed');
+        focusRules.push({ ...parsed, outline, draws, selector: sel });
+      } else if (outline === 'suppressed' && !sel.includes(':focus') && !sel.includes('::')) {
+        suppressRules.push(sel);
+      }
+      // Anything left, like :focus:not(:focus-visible) { outline: none }, only hides the
+      // ring for mouse users, which WCAG allows.
+    });
+  });
+
+  return { suppressRules, focusRules, readable, fetched, unreadable };
+}
+
+function staticFocusVerdict(el, rules) {
+  let suppressedBy = null;
+  for (const sel of rules.suppressRules) {
+    if (safeMatches(el, sel)) { suppressedBy = sel; break; }
+  }
+  if (!suppressedBy) {
+    const inline = outlineFromStyle(el.style);
+    if (inline === 'suppressed' && !isOurBadgeOutline(el)) suppressedBy = 'inline style';
+  }
+
+  let drawnBy = null;
+  for (const r of rules.focusRules) {
+    const applies = r.within ? safeClosest(el, r.anchor) : safeMatches(el, r.anchor);
+    if (!applies) continue;
+    if (r.outline === 'suppressed' && !r.onOther && !suppressedBy) suppressedBy = r.selector;
+    if (r.draws) { drawnBy = r.selector; break; }
+  }
+
+  if (drawnBy) return { hasIndicator: true, source: 'page focus style', detail: drawnBy };
+  if (suppressedBy) {
+    return {
+      hasIndicator: false, source: 'stylesheet',
+      note: `Browser focus ring removed by "${suppressedBy}" and no :focus or :focus-visible style replaces it`
+    };
+  }
+  return { hasIndicator: true, source: 'browser default focus ring' };
+}
+
+function isOurBadgeOutline(el) {
+  return Object.values(badgeGroups).some(group => (group || []).some(b => b.outline && b.outline.el === el));
+}
+
+function focusStyleSnapshot(el) {
+  const take = (pseudo) => {
+    const s = window.getComputedStyle(el, pseudo);
+    return [s.outlineStyle, s.outlineWidth, s.outlineColor, s.outlineOffset, s.boxShadow,
+      s.borderTopColor, s.borderBottomColor, s.borderTopWidth, s.borderBottomWidth,
+      s.backgroundColor, s.backgroundImage, s.color, s.textDecorationLine, s.transform, s.opacity,
+      pseudo ? s.content : ''].join('|');
+  };
+  return take(null) + '#' + take('::before') + '#' + take('::after');
+}
+
+async function getFocusIndicators() {
+  clearBadgeGroup('focus');
+
+  const candidates = Array.from(document.querySelectorAll(FOCUSABLE)).filter(el => {
+    const ti = parseInt(el.getAttribute('tabindex'), 10);
+    return (isNaN(ti) || ti >= 0) && isVisible(el);
+  });
+  const checked = candidates.slice(0, FOCUS_CHECK_LIMIT);
+
+  const rules = await gatherFocusRules();
+  const pageHasFocus = document.hasFocus();
+  const previouslyFocused = document.activeElement;
+
+  // Turn transitions off while we look, or a fading-in focus ring reads as "no change"
+  const freeze = document.createElement('style');
+  freeze.textContent = '*, *::before, *::after { transition: none !important; animation: none !important; }';
+  if (pageHasFocus) document.head.appendChild(freeze);
+
+  let liveCount = 0;
+  const found = checked.map(el => {
+    let verdict = null;
+    if (pageHasFocus) {
+      try {
+        const before = focusStyleSnapshot(el);
+        el.focus({ preventScroll: true });
+        if (document.activeElement === el && safeMatches(el, ':focus-visible')) {
+          const after = focusStyleSnapshot(el);
+          verdict = before !== after
+            ? { hasIndicator: true, source: 'live check' }
+            : { hasIndicator: false, source: 'live check', note: 'No visible style change when focused' };
+          liveCount++;
+        }
+        el.blur();
+      } catch (e) { verdict = null; }
+    }
+    if (!verdict) verdict = staticFocusVerdict(el, rules);
+
+    return {
+      tag: el.tagName.toLowerCase(),
+      text: (el.innerText || el.getAttribute('aria-label') || el.getAttribute('value') || el.getAttribute('title') || '').trim().substring(0, 40),
+      selector: generateSelector(el),
+      hasIndicator: verdict.hasIndicator,
+      source: verdict.source,
+      note: verdict.note || ''
+    };
+  });
+
+  if (freeze.parentNode) freeze.parentNode.removeChild(freeze);
+  try {
+    if (previouslyFocused && previouslyFocused !== document.body && previouslyFocused.focus) {
+      previouslyFocused.focus({ preventScroll: true });
+    }
+  } catch (e) { /* ignore */ }
+
+  const missing = found.filter(f => !f.hasIndicator);
+  missing.forEach(f => {
+    try {
+      const el = document.querySelector(f.selector);
+      if (el) injectBadge(el, 'no focus style ⚠', '#dc2626', 'focus');
+    } catch (e) { /* bad selector, skip */ }
+  });
+
+  return {
+    elements: found,
+    summary: {
+      total: found.length,
+      totalFocusable: candidates.length,
+      missing: missing.length,
+      browserDefault: found.filter(f => f.source === 'browser default focus ring').length,
+      method: liveCount === found.length && found.length ? 'live' : (liveCount ? 'mixed' : 'stylesheet'),
+      pageHasFocus,
+      sheetsRead: rules.readable + rules.fetched,
+      sheetsUnreadable: rules.unreadable.length
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------

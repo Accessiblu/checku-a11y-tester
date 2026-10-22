@@ -3,10 +3,26 @@
 Ü Check is the Accessiblü browser extension for WCAG auditing. Versions are the `version` in `manifest.json`.
 After you reload the extension in `chrome://extensions`, the new number shows on its card.
 
-## Unreleased
+## 1.16.0 (2026-10-22)
+
+Brings back four audit tools from the 1.6 and 1.7 releases that were built on a separate copy of the code and never carried into 1.8 through 1.15.
+
+### New
+- **Check Focus Indicators** (Audit Tools). Finds every focusable element where the browser's focus ring is removed (for example `outline: none`) and nothing replaces it. Flagged elements get a red "no focus style" label on the page. For WCAG 2.4.7 Focus Visible.
+  - Chrome only applies focus styles while the page itself has focus, and it does not have focus while you are using Ü Check in the side panel or a pop-out window. So when it can't watch focus live, Ü Check reads the page's CSS instead: it looks for rules that remove the ring and for `:focus`, `:focus-visible` and `:focus-within` rules that draw something else. When the page does have focus, it focuses each element and compares its styles before and after.
+  - `:focus:not(:focus-visible) { outline: none }` is not flagged. It only hides the ring for mouse users, which WCAG allows.
+  - Stylesheets from other domains are fetched so their rules count too. If one can't be read, the panel says so.
+  - It does not judge whether an indicator is easy to see. Always Tab through the page and look.
+- **Watch Live Regions** (Audit Tools). Lists every live region on the page (`aria-live`, `role="status"`, `role="alert"`, `role="log"` and `output`) and records each update while you use the page. A region that never shows an update here won't announce to a screen reader either. Regions that already hold text are marked, because text that was there when the region was created is not announced. For WCAG 4.1.3 Status Messages.
+- **`role="application"` review.** A test now adds a Needs Review item for each `role="application"` region. That role turns off a screen reader's reading keys inside it, which is right for a canvas editor and wrong on ordinary content. Counted under 2.1.1 Keyboard in the VPAT Matrix.
+- **Drag interaction review.** A test now adds a Needs Review item for `draggable="true"` elements and common drag-and-drop libraries (Sortable.js, react-beautiful-dnd, dnd-kit, interact.js, jQuery UI), so you can confirm a single-pointer alternative exists. Counted under 2.5.7 Dragging Movements, which had no automated evidence before.
 
 ### Changed
 - Updated the bundled axe-core engine from 4.8.4 to 4.14.0. The `axe.run` options and WCAG tags Ü Check uses are unchanged. Newer rules may report a few findings older versions missed.
+- The skip link and the Pop out button now show their focus ring in Accessiblü Orange (`#F18B43`). Both sit on the navy header, where Orange is about 7:1. Every other focus ring stays Cobalt, because on white Orange is only 2.5:1, below the 3:1 minimum.
+
+### Fixed
+- After "New Test", Audit Tools buttons that were on kept their "Hide" wording (for example "Hide Landmarks") even though the tool was off. They now go back to "Show".
 
 ## 1.15.0 (2026-10-19)
 

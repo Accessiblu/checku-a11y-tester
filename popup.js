@@ -15,7 +15,7 @@ let headingsActive  = false;
 let imageAltActive  = false;
 
 // Generic tool toggle state: key = tool name, value = boolean
-const activeTools = { landmarks: false, lists: false, icons: false, navs: false };
+const activeTools = { landmarks: false, lists: false, icons: false, navs: false, focus: false };
 
 // Inline verdicts recorded directly in the VPAT matrix
 // Shape: { "1.1.1": { conformance: "Supports", remark: "..." }, ... }
@@ -231,6 +231,8 @@ function setupEventListeners() {
   document.getElementById('navsBtn').addEventListener('click', toggleTool.bind(null, 'navs'));
   document.getElementById('contrastBtn').addEventListener('click', toggleContrast);
   document.getElementById('ariaBtn').addEventListener('click', toggleAriaInspector);
+  document.getElementById('focusBtn').addEventListener('click', () => toggleTool('focus'));
+  document.getElementById('liveRegionBtn').addEventListener('click', toggleLiveRegions);
   document.getElementById('inventoryBtn').addEventListener('click', toggleInventory);
   document.getElementById('exportReportBtn').addEventListener('click', exportHTMLReport);
   document.getElementById('exportVpatBtn').addEventListener('click', exportVpatCSV);
@@ -782,6 +784,13 @@ const TOOL_CONFIG = {
     onLabel:  'Hide Nav &amp; Menus',
     offLabel: 'Show Nav &amp; Menus',
     renderPanel: renderNavs
+  },
+  focus: {
+    getAction:   'getFocusIndicators',
+    clearAction: 'clearFocusIndicators',
+    onLabel:  'Hide Focus Indicators',
+    offLabel: 'Check Focus Indicators',
+    renderPanel: renderFocusIndicators
   }
 };
 
@@ -937,6 +946,172 @@ function renderNavs({ navs, summary }) {
     hasIssues: summary.unlabelled > 0
   };
 }
+
+function renderFocusIndicators({ elements, summary }) {
+  const flagged = elements.filter(e => !e.hasIndicator);
+  const methodNote = summary.method === 'live'
+    ? 'Checked live: each element was focused and its styles compared before and after.'
+    : summary.method === 'mixed'
+      ? 'Checked live where Chrome applied keyboard focus styles, and from the page’s stylesheets everywhere else.'
+      : 'Checked from the page’s stylesheets. Chrome only applies focus styles while the page itself has focus, so Ü Check read the CSS rules instead of watching the page.';
+
+  let html = `<div class="heading-summary">
+    ${summary.total} focusable element${summary.total !== 1 ? 's' : ''} checked
+    ${flagged.length > 0
+      ? `· <span style="color:#dc2626;font-weight:600">${flagged.length} with no focus indicator ⚠</span>`
+      : '· every one has a focus indicator'}
+  </div>
+  ${summary.totalFocusable > summary.total ? `<p class="hint">Only the first ${summary.total} of ${summary.totalFocusable} were checked.</p>` : ''}
+  ${summary.sheetsUnreadable > 0 ? `<p class="hint">${summary.sheetsUnreadable} stylesheet${summary.sheetsUnreadable !== 1 ? 's' : ''} could not be read, so a focus style defined there would be missed. Confirm flagged elements by hand.</p>` : ''}`;
+
+  if (elements.length === 0) {
+    html += `<p class="hint">No focusable elements found on this page.</p>`;
+  } else if (flagged.length === 0) {
+    html += `<p class="hint">${summary.browserDefault} element${summary.browserDefault !== 1 ? 's use' : ' uses'} the browser’s default focus ring and the rest have a focus style from the page.</p>`;
+  } else {
+    html += flagged.map(e => `
+      <div class="heading-row">
+        <span class="heading-level-chip" style="background:#dc2626">${escapeHtml(e.tag)}</span>
+        <span class="heading-text">${escapeHtml(e.text) || '<em style="color:#595959">(no visible text)</em>'}</span>
+        <span style="color:#92400e;font-size:10px">${escapeHtml(e.note)}</span>
+      </div>
+    `).join('');
+  }
+
+  html += `<details class="hint" style="margin-top:8px"><summary>About this check</summary>
+    <p>${methodNote}</p>
+    <p>No screen reader test can catch a missing focus indicator. JAWS and NVDA both announce “focused” whether or not anything is visible. This flags elements where the focus ring is removed and nothing replaces it. It does not judge whether an indicator is easy to see, so always Tab through the page and look (WCAG 2.4.7, and 2.4.13 at AAA).</p>
+  </details>`;
+
+  return {
+    html,
+    statusText: `${summary.total} checked${flagged.length > 0 ? ` · ${flagged.length} flagged` : ' · none flagged'}`,
+    hasIssues: flagged.length > 0
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tools — Live Region Watcher (WCAG 4.1.3)
+// ---------------------------------------------------------------------------
+
+let liveRegionActive = false;
+
+function setLiveRegionButton(on) {
+  const btn = document.getElementById('liveRegionBtn');
+  if (!btn) return;
+  btn.textContent = on ? 'Stop Watching Live Regions' : 'Watch Live Regions';
+  btn.classList.toggle('active', on);
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+}
+
+async function toggleLiveRegions() {
+  const panel  = document.getElementById('liveRegionPanel');
+  const status = document.getElementById('liveRegionStatus');
+  const tab = await getActiveTab();
+
+  if (liveRegionActive) {
+    await chrome.tabs.sendMessage(tab.id, { action: 'stopLiveRegionWatch' }).catch(() => {});
+    liveRegionActive = false;
+    setLiveRegionButton(false);
+    panel.classList.add('hidden');
+    panel.innerHTML = '';
+    status.textContent = 'Stopped watching';
+    status.className = 'tool-status';
+    return;
+  }
+
+  let response;
+  try {
+    response = await chrome.tabs.sendMessage(tab.id, { action: 'startLiveRegionWatch' });
+  } catch (e) {
+    status.textContent = 'Could not reach the page. Run a test first, then try again.';
+    status.className = 'tool-status has-issues';
+    return;
+  }
+  if (!response || !response.success) return;
+
+  liveRegionActive = true;
+  setLiveRegionButton(true);
+
+  panel.innerHTML = `
+    <p class="hint">Watching now. Do the thing on the page that should announce something, like adding an item to a cart, saving a form or filtering results. Then select Refresh Log. A region that never shows up here won’t announce to a screen reader either.</p>
+    <button id="refreshLiveRegionBtn" type="button" class="tool-btn" style="margin:8px 0;">Refresh Log</button>
+    <div id="liveRegionResults"></div>`;
+  panel.classList.remove('hidden');
+  document.getElementById('refreshLiveRegionBtn').addEventListener('click', refreshLiveRegionLog);
+
+  renderLiveRegionResults(response.result.staticFindings, []);
+  const n = response.result.regionCount;
+  status.textContent = n > 0 ? `${n} region${n !== 1 ? 's' : ''} · watching` : 'No live regions found · watching for new ones';
+  status.className = `tool-status ${n > 0 ? 'all-clear' : 'has-issues'}`;
+}
+
+async function refreshLiveRegionLog() {
+  const status = document.getElementById('liveRegionStatus');
+  const tab = await getActiveTab();
+  let response;
+  try {
+    response = await chrome.tabs.sendMessage(tab.id, { action: 'getLiveRegionLog' });
+  } catch (e) {
+    status.textContent = 'Could not reach the page. It may have reloaded. Start watching again.';
+    status.className = 'tool-status has-issues';
+    liveRegionActive = false;
+    setLiveRegionButton(false);
+    return;
+  }
+  if (!response || !response.success) return;
+  const { staticFindings, log, watching } = response.result;
+  if (!watching) {
+    liveRegionActive = false;
+    setLiveRegionButton(false);
+  }
+  renderLiveRegionResults(staticFindings, log);
+  status.textContent = `${log.length} update${log.length !== 1 ? 's' : ''} captured from ${staticFindings.length} region${staticFindings.length !== 1 ? 's' : ''}`;
+  status.className = `tool-status ${log.length > 0 ? 'all-clear' : 'has-issues'}`;
+}
+
+function renderLiveRegionResults(staticFindings, log) {
+  const box = document.getElementById('liveRegionResults');
+  if (!box) return;
+
+  let html = `<div class="heading-summary">${staticFindings.length} live region${staticFindings.length !== 1 ? 's' : ''} on the page</div>`;
+  if (staticFindings.length === 0) {
+    html += `<p class="hint">No <code>aria-live</code>, <code>role="status"</code>, <code>role="alert"</code>, <code>role="log"</code> or <code>output</code> elements found. If this page shows status messages (saved, added to cart, 5 results), they are not announced to screen reader users.</p>`;
+  } else {
+    html += staticFindings.map(f => `
+      <div class="heading-row">
+        <span class="heading-level-chip" style="background:${f.hasContentAlready ? '#b45309' : '#0e7490'}">${escapeHtml(f.politeness || f.role)}</span>
+        <span class="heading-text">${escapeHtml(f.selector)}</span>
+        ${f.note ? `<span style="color:#92400e;font-size:10px">⚠ ${escapeHtml(f.note)}</span>` : ''}
+      </div>
+    `).join('');
+  }
+
+  html += `<div class="heading-summary" style="margin-top:8px">Captured updates (${log.length})</div>`;
+  if (log.length === 0) {
+    html += `<p class="hint">Nothing captured yet.</p>`;
+  } else {
+    html += log.slice().reverse().map(entry => `
+      <div class="heading-row">
+        <span class="heading-text">${escapeHtml(entry.selector)}: “${escapeHtml(entry.newText) || '(emptied)'}”</span>
+      </div>
+    `).join('');
+  }
+
+  box.innerHTML = html;
+}
+
+async function stopLiveRegionWatchIfActive() {
+  if (!liveRegionActive) return;
+  liveRegionActive = false;
+  try {
+    const tab = await getActiveTab();
+    if (tab) await chrome.tabs.sendMessage(tab.id, { action: 'stopLiveRegionWatch' });
+  } catch (e) { /* tab may be gone, nothing to clean up */ }
+}
+
+// Stop the page's observer if Ü Check closes while watching
+window.addEventListener('pagehide', () => { stopLiveRegionWatchIfActive(); });
 
 // ---------------------------------------------------------------------------
 // Export: JSON
@@ -1108,10 +1283,11 @@ function resetToolState() {
   inventoryActive = false;
   inventoryData = null;
   Object.keys(activeTools).forEach(k => { activeTools[k] = false; });
+  stopLiveRegionWatchIfActive();
 
-  const allBtns   = ['tabOrderBtn', 'headingsBtn', 'imageAltBtn', 'landmarksBtn', 'listsBtn', 'iconsBtn', 'navsBtn', 'contrastBtn', 'ariaBtn', 'inventoryBtn'];
-  const allPanels = ['tabOrderPanel', 'headingsPanel', 'imageAltPanel', 'landmarksPanel', 'listsPanel', 'iconsPanel', 'navsPanel', 'contrastPanel', 'ariaPanel', 'inventoryPanel'];
-  const allStatus = ['tabOrderStatus', 'headingsStatus', 'imageAltStatus', 'landmarksStatus', 'listsStatus', 'iconsStatus', 'navsStatus', 'contrastStatus', 'ariaStatus', 'inventoryStatus'];
+  const allBtns   = ['tabOrderBtn', 'headingsBtn', 'imageAltBtn', 'landmarksBtn', 'listsBtn', 'iconsBtn', 'navsBtn', 'contrastBtn', 'ariaBtn', 'focusBtn', 'liveRegionBtn', 'inventoryBtn'];
+  const allPanels = ['tabOrderPanel', 'headingsPanel', 'imageAltPanel', 'landmarksPanel', 'listsPanel', 'iconsPanel', 'navsPanel', 'contrastPanel', 'ariaPanel', 'focusPanel', 'liveRegionPanel', 'inventoryPanel'];
+  const allStatus = ['tabOrderStatus', 'headingsStatus', 'imageAltStatus', 'landmarksStatus', 'listsStatus', 'iconsStatus', 'navsStatus', 'contrastStatus', 'ariaStatus', 'focusStatus', 'liveRegionStatus', 'inventoryStatus'];
 
   allBtns.forEach(id => {
     const el = document.getElementById(id);
@@ -1125,6 +1301,11 @@ function resetToolState() {
     const el = document.getElementById(id);
     if (el) { el.textContent = ''; el.className = 'tool-status'; }
   });
+  Object.keys(TOOL_CONFIG).forEach(name => {
+    const btn = document.getElementById(`${name}Btn`);
+    if (btn) btn.innerHTML = TOOL_CONFIG[name].offLabel;
+  });
+  setLiveRegionButton(false);
 }
 
 function resetToConfig() {
@@ -2034,7 +2215,7 @@ const WCAG_2_2_CRITERIA = [
   { sc:'1.3.3', name:'Sensory Characteristics',               level:'A',  axeRules:[],                                                                                             manualRequired:true },
   { sc:'1.4.1', name:'Use of Color',                          level:'A',  axeRules:[],                                                                                             manualRequired:true },
   { sc:'1.4.2', name:'Audio Control',                         level:'A',  axeRules:[],                                                                                             manualRequired:true },
-  { sc:'2.1.1', name:'Keyboard',                              level:'A',  axeRules:['scrollable-region-focusable'],                                                                manualRequired:true },
+  { sc:'2.1.1', name:'Keyboard',                              level:'A',  axeRules:['scrollable-region-focusable','role-application-review'],                                      manualRequired:true },
   { sc:'2.1.2', name:'No Keyboard Trap',                      level:'A',  axeRules:[],                                                                                             manualRequired:true },
   { sc:'2.1.4', name:'Character Key Shortcuts',               level:'A',  axeRules:[],                                                                                             manualRequired:true },
   { sc:'2.2.1', name:'Timing Adjustable',                     level:'A',  axeRules:['meta-refresh'],                                                                               manualRequired:true },
@@ -2072,7 +2253,7 @@ const WCAG_2_2_CRITERIA = [
   { sc:'2.4.6', name:'Headings and Labels',                   level:'AA', axeRules:['empty-heading','page-has-heading-one'],                                                        manualRequired:true },
   { sc:'2.4.7', name:'Focus Visible',                         level:'AA', axeRules:['focus-visible'],                                                                              manualRequired:true },
   { sc:'2.4.11', name:'Focus Not Obscured (Minimum)',            level:'AA', axeRules:[],                                                                                             manualRequired:true },
-  { sc:'2.5.7', name:'Dragging Movements',                    level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'2.5.7', name:'Dragging Movements',                    level:'AA', axeRules:['drag-interaction-review'],                                                                    manualRequired:true },
   { sc:'2.5.8', name:'Target Size (Minimum)',                 level:'AA', axeRules:['target-size'],                                                                                manualRequired:true },
   { sc:'3.1.2', name:'Language of Parts',                     level:'AA', axeRules:['valid-lang'],                                                                                 manualRequired:true },
   { sc:'3.2.3', name:'Consistent Navigation',                 level:'AA', axeRules:[],                                                                                             manualRequired:true },
