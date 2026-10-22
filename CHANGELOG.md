@@ -20,6 +20,7 @@ Brings back four audit tools from the 1.6 and 1.7 releases that were built on a 
 ### Changed
 - Updated the bundled axe-core engine from 4.8.4 to 4.14.0. The `axe.run` options and WCAG tags Ü Check uses are unchanged. Newer rules may report a few findings older versions missed.
 - The skip link and the Pop out button now show their focus ring in Accessiblü Orange (`#F18B43`). Both sit on the navy header, where Orange is about 7:1. Every other focus ring stays Cobalt, because on white Orange is only 2.5:1, below the 3:1 minimum.
+- Shorter extension description, to fit the Chrome Web Store's 132-character limit.
 
 ### Fixed
 - After "New Test", Audit Tools buttons that were on kept their "Hide" wording (for example "Hide Landmarks") even though the tool was off. They now go back to "Show".
