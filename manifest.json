@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Ü Check: WCAG Accessibility Audit + VPAT",
   "version": "1.16.0",
-  "description": "Ü Check by Accessiblü: WCAG 2.2 audit tool with VPAT matrix with per-criterion element counts, ACR export and element inventory. Syncs results to Ü Monitor.",
+  "description": "Ü Check by Accessiblü: WCAG 2.2 audits with guided manual checks, element inventory, VPAT matrix and ACR export.",
   "homepage_url": "https://www.accessiblu.com",
   "permissions": [
     "activeTab",
