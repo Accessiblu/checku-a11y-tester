@@ -272,7 +272,7 @@ select {
 /* Tabs */
 .results-tabs {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: wrap;   /* six tabs do not fit in a narrow popup; wrap instead of hiding the last ones */
   gap: 4px;
   margin-bottom: 12px;
   border-bottom: 1px solid #e0e0e0;
@@ -280,14 +280,13 @@ select {
 }
 
 .tab-btn {
-  padding: 8px 10px;
+  padding: 8px 12px;
   background: none;
   border: none;
   border-radius: 6px;
   font-size: 13px;
   cursor: pointer;
   color: #666;
-  white-space: nowrap;
 }
 
 .tab-btn:hover {
@@ -557,7 +556,7 @@ footer {
 }
 
 .tool-status.has-issues { color: #dc2626; font-weight: 600; }
-.tool-status.all-clear  { color: #16a34a; font-weight: 600; }
+.tool-status.all-clear  { color: #14532d; font-weight: 600; }   /* dark green: 9:1 on white (the old #16a34a was 3.3:1) */
 
 .tool-panel {
   max-height: 180px;
@@ -1214,45 +1213,6 @@ footer {
 
 .vpat-readiness-cell { vertical-align: top; }
 
-/* ── "How to test" disclosure in the Criterion cell ─────────────────────── */
-.vpat-howto {
-  margin-top: 4px;
-}
-
-.vpat-howto summary {
-  font-size: 9px;
-  font-weight: 600;
-  color: #0049DB;
-  cursor: pointer;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  list-style: none;
-}
-
-.vpat-howto summary::-webkit-details-marker { display: none; }
-.vpat-howto summary::before { content: '▸ '; }
-.vpat-howto[open] summary::before { content: '▾ '; }
-
-.vpat-howto p {
-  font-size: 10px;
-  color: #4b5563;
-  line-height: 1.4;
-  margin: 4px 0 6px;
-}
-
-.vpat-test-btn {
-  font-size: 9px;
-  font-weight: 600;
-  color: white;
-  background: #0049DB;
-  border: none;
-  border-radius: 4px;
-  padding: 3px 8px;
-  cursor: pointer;
-}
-
-.vpat-test-btn:hover { background: #000B5E; }
-
 .vpat-disclaimer {
   font-size: 11px;
   color: #9ca3af;
@@ -1508,7 +1468,7 @@ details[open] .vpat-product-summary::before {
 }
 .skip-link:focus {
   top: 0;
-  outline: 3px solid #F18B43; /* Accessiblü Orange — 7:1 against the #000B5E skip-link bg, passes AA */
+  outline: 3px solid #FFD700;
   outline-offset: 2px;
 }
 
@@ -1561,11 +1521,9 @@ details[open] .vpat-product-summary::before {
   border-radius: 4px;
 }
 
-/* Expand / pop-out button in dark header — Orange reads well against the
-   navy header background (~7:1); everywhere else in this file stays Cobalt
-   because most rings there sit on white, where Orange fails 3:1. */
+/* Expand / pop-out button in dark header */
 .expand-btn:focus-visible {
-  outline: 2px solid #F18B43;
+  outline: 2px solid white;
   outline-offset: 2px;
   border-radius: 5px;
 }
@@ -1597,31 +1555,30 @@ input[type="radio"]:focus-visible {
 
 /* ARIA filter bar buttons */
 .aria-filter-btn:focus-visible,
-.vpat-v-btn:focus-visible,
-.vpat-test-btn:focus-visible,
-.vpat-howto summary:focus-visible {
+.vpat-v-btn:focus-visible {
   outline: 2px solid #0049DB;
   outline-offset: 1px;
   border-radius: 4px;
 }
 
 /* =========================================================
-   Pulse integration tab
+   Ü Monitor tab
    ========================================================= */
 
-#pulseTab h3 {
+#monitorTab h3 {
   font-size: 14px;
   margin: 4px 0 6px;
 }
 
-.pulse-hint {
+.monitor-hint {
   font-size: 12px;
   color: #666;
   margin: 0 0 10px;
 }
 
-#pulseTokenInput,
-#pulseUrlInput {
+#monitorUrlInput,
+#monitorEmailInput,
+#monitorPasswordInput {
   width: 100%;
   padding: 8px 12px;
   border: 1px solid #ddd;
@@ -1631,16 +1588,92 @@ input[type="radio"]:focus-visible {
   box-sizing: border-box;
 }
 
-.pulse-connected-row {
+.monitor-connected-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 12px;
   font-size: 12px;
-  color: #16a34a;
+  color: #14532d;
   font-weight: 600;
 }
+.monitor-connected-row .back-btn { min-height: 32px; min-width: 32px; padding: 4px 10px; }
 
-#pulseSendSection .primary-btn {
+#monitorSendSection .primary-btn {
   margin-top: 10px;
 }
+
+/* AI draft test plan */
+.monitor-plan { border: 2px solid #374151; border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+.monitor-plan h4 { margin: 0 0 6px; font-size: 14px; }
+.monitor-plan h5 { margin: 12px 0 2px; font-size: 13px; }
+.monitor-plan ol { margin: 2px 0 6px 18px; padding: 0; }
+.monitor-plan .plan-method { font-weight: 700; margin: 6px 0 0; font-size: 12px; }
+.monitor-plan-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+
+/* Guided audit */
+.g-group { border: 2px solid #374151; border-radius: 8px; margin: 10px 0; padding: 4px 10px 10px; }
+.g-group > summary { font-weight: 700; cursor: pointer; padding: 6px 0; font-size: 13px; }
+.g-check { border: 1px solid #6b7280; border-radius: 6px; margin: 10px 0; padding: 8px 10px; }
+.g-check legend { font-weight: 700; font-size: 13px; padding: 0 4px; }
+.g-look, .g-meta { margin: 4px 0; font-size: 12px; color: #374151; }
+.g-results { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 8px 0; }
+.g-radio, .g-check-box { font-size: 13px; display: inline-flex; align-items: center; gap: 6px; min-height: 32px; cursor: pointer; }
+.g-radio input, .g-check-box input { width: 24px; height: 24px; margin: 0; flex: none; }   /* 24px target (WCAG 2.5.8) */
+.g-field { display: block; font-size: 12px; font-weight: 600; margin: 6px 0; }
+.g-field input, .g-field textarea { display: block; width: 100%; margin-top: 2px; font: inherit; padding: 4px 6px; border: 1px solid #6b7280; border-radius: 4px; box-sizing: border-box; }
+.g-status { margin: 4px 0 0; font-size: 12px; color: #14532d; font-weight: 600; }
+.g-error { color: #991b1b; }
+.g-pri { font-size: 11px; font-weight: 700; border: 1px solid currentColor; border-radius: 999px; padding: 0 6px; margin-left: 4px; }
+.g-pri-high { color: #991b1b; } .g-pri-medium { color: #92400e; } .g-pri-low { color: #374151; }
+.g-method { font-weight: 700; margin: 6px 0 0; font-size: 12px; }
+
+/* Guided audit: apply to the other groups */
+.g-apply { margin: 8px 0 2px; font-size: 12px; padding: 4px 10px; }
+.g-hint { display: block; font-size: 11px; color: #374151; margin-bottom: 4px; }
+
+/* Guided audit: show on page */
+.g-show { margin: 6px 6px 2px 0; font-size: 12px; padding: 4px 10px; }
+.g-hl { border: 2px solid #000b5e; border-radius: 6px; padding: 8px 10px; margin: 8px 0; background: #eef2ff; }
+.g-hl-status { margin: 0 0 6px; font-size: 13px; font-weight: 700; color: #000b5e; }
+.g-hl-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.g-hl-buttons .secondary-btn { font-size: 12px; padding: 4px 10px; }
+
+/* Guided audit: highlight all */
+.g-hlall { margin: 8px 0; }
+.g-legend { list-style: none; margin: 6px 0; padding: 0; font-size: 12px; columns: 2; }
+.g-legend li { display: flex; align-items: center; gap: 6px; padding: 2px 0; break-inside: avoid; }
+.g-swatch { width: 14px; height: 14px; border: 2px solid #000; border-radius: 3px; flex: none; }
+
+/* Guided audit: screenshots */
+.g-shots { margin: 8px 0; }
+.g-shot-btn { font-size: 12px; padding: 4px 10px; }
+.g-shot { margin: 8px 0; border: 1px solid #6b7280; border-radius: 6px; padding: 6px; }
+.g-shot img { max-width: 100%; height: auto; display: block; border: 1px solid #d1d5db; }
+.g-shot figcaption { margin-top: 6px; }
+
+/* Guided audit: attach an image file */
+.g-file { margin-top: 6px; }
+.g-file input[type=file] { font-size: 12px; margin-top: 2px; }
+
+/* W3C reference links under each criterion in the VPAT matrix */
+.vpat-links { margin-top: 2px; font-size: 0.85em; }
+.vpat-links a { color: inherit; text-decoration: underline; }
+.vpat-links a:focus-visible { outline: 3px solid currentColor; outline-offset: 2px; }
+
+/* Element inventory panel */
+.inv-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 6px 0 10px; }
+.inv-table caption { text-align: left; font-weight: 600; padding: 4px 0; }
+.inv-table th, .inv-table td { border: 1px solid #d1d5db; padding: 5px 7px; text-align: left; vertical-align: top; }
+.inv-table thead th { background: #0A1C78; color: #fff; }
+.inv-table tbody th { background: #f3f4f6; font-weight: 600; }
+.inv-panel h3, .inv-panel h4 { margin: 12px 0 4px; }
+.inv-panel ul { margin: 4px 0 8px 18px; padding: 0; }
+.inv-panel details { margin: 4px 0; }
+.inv-panel summary { cursor: pointer; font-weight: 600; padding: 3px 0; }
+.inv-scan { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.inv-scan input { min-width: 180px; padding: 5px 7px; font-size: 13px; }
+.inv-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.inv-note { font-size: 12px; color: #374151; }
+
+.vpat-counts { margin-top: 4px; font-size: 12px; color: #374151; }

@@ -1,4 +1,4 @@
-ACCESSIBLÜ WCAG CHECK Ü — CHROME EXTENSION
+Ü CHECK BY ACCESSIBLÜ — CHROME EXTENSION
 ==============================================
 
 HOW TO INSTALL
@@ -29,7 +29,10 @@ HOW TO USE
 3. Select a WCAG conformance level (A, AA, or AAA)
 4. Click "Run Accessibility Test"
 5. Review Violations, Passes, and Needs Review tabs
-6. Use the Tools tab to inspect tab order, headings, images, landmarks, and more
+6. Use the Audit Tools tab to inspect tab order, headings, images, landmarks, and more.
+   Element Inventory counts every instance of each element type in every frame of the page,
+   and exports a CSV for the audit sheet. Content hidden until opened (menus, dialogs) needs a
+   second scan with it open.
 7. Export your results as JSON, CSV, or a full Accessibility Conformance Report (ACR)
 
 SCREEN READER & KEYBOARD-ONLY USERS

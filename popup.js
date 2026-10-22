@@ -15,33 +15,23 @@ let headingsActive  = false;
 let imageAltActive  = false;
 
 // Generic tool toggle state: key = tool name, value = boolean
-const activeTools = { landmarks: false, lists: false, icons: false, navs: false, focus: false };
-
-let liveRegionActive = false;
+const activeTools = { landmarks: false, lists: false, icons: false, navs: false };
 
 // Inline verdicts recorded directly in the VPAT matrix
 // Shape: { "1.1.1": { conformance: "Supports", remark: "..." }, ... }
 let vpatVerdicts = {};
 
 // ---------------------------------------------------------------------------
-// Pulse integration state
+// Ü Monitor integration state
 // ---------------------------------------------------------------------------
 
 // { token, baseUrl } — persisted to chrome.storage.local, not per-tab.
-let pulseConfig = { token: null, baseUrl: 'http://localhost:3000' };
+let monitorConfig = { session: null, baseUrl: 'http://localhost:3000/api/v1' };
 
-// Cached result of the last GET /api/extension/context lookup for the
-// current tab's URL, so sendVerdictsToPulse() doesn't need to re-fetch it.
-let pulseContext = null;
-
-// Extension's VPAT conformance labels use human-readable strings; Pulse's
-// CriterionAssessment.vpatConformanceLevel is a fixed enum — map between them.
-const PULSE_CONFORMANCE_MAP = {
-  'Supports':           'SUPPORTS',
-  'Partially Supports': 'PARTIALLY_SUPPORTS',
-  'Does Not Support':   'DOES_NOT_SUPPORT',
-  'Not Applicable':     'NOT_APPLICABLE',
-};
+// Result of the last /context lookup for the active tab, and pages this session
+// has created for non-default scan states (url|state -> page).
+let monitorContext = null;
+const monitorPages = {};
 
 // Guard so renderVpatMatrix() doesn't stack up duplicate event listeners
 let _vpatListenerAttached = false;
@@ -200,8 +190,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (data.vpatProductInfo) Object.assign(vpatProductInfo, data.vpatProductInfo);
     renderVpatProductForm();
   });
-  await loadPulseConfig();
-  renderPulseConnectionUI();
+  // Show the real version from the manifest, so it can never drift from what Chrome lists
+  document.getElementById('extVersion').textContent = 'v' + chrome.runtime.getManifest().version;
+  await loadMonitorConfig();
+  renderMonitorConnectionUI();
   setupEventListeners();
   initExpandMode();
   initTabKeyboard();
@@ -239,8 +231,7 @@ function setupEventListeners() {
   document.getElementById('navsBtn').addEventListener('click', toggleTool.bind(null, 'navs'));
   document.getElementById('contrastBtn').addEventListener('click', toggleContrast);
   document.getElementById('ariaBtn').addEventListener('click', toggleAriaInspector);
-  document.getElementById('focusBtn').addEventListener('click', toggleTool.bind(null, 'focus'));
-  document.getElementById('liveRegionBtn').addEventListener('click', toggleLiveRegions);
+  document.getElementById('inventoryBtn').addEventListener('click', toggleInventory);
   document.getElementById('exportReportBtn').addEventListener('click', exportHTMLReport);
   document.getElementById('exportVpatBtn').addEventListener('click', exportVpatCSV);
   document.getElementById('exportAcrBtn').addEventListener('click', exportAcrHtml);
@@ -258,15 +249,24 @@ function setupEventListeners() {
   // Expand button
   document.getElementById('expandBtn')?.addEventListener('click', openExpanded);
 
-  // Pulse tab
-  document.getElementById('pulseConnectBtn').addEventListener('click', connectToPulse);
-  document.getElementById('pulseDisconnectBtn').addEventListener('click', disconnectFromPulse);
-  document.getElementById('pulseSendBtn').addEventListener('click', sendVerdictsToPulse);
+  // Ü Monitor tab
+  document.getElementById('monitorConnectBtn').addEventListener('click', connectToMonitor);
+  document.getElementById('monitorDisconnectBtn').addEventListener('click', disconnectFromMonitor);
+  document.getElementById('monitorSendScanBtn').addEventListener('click', sendScanToMonitor);
+  document.getElementById('monitorSendInventoryBtn').addEventListener('click', sendInventoryToMonitor);
+  document.getElementById('monitorSendVerdictsBtn').addEventListener('click', sendVerdictsToMonitor);
+  document.getElementById('monitorPlanBtn').addEventListener('click', planPageWithAi);
+  // Guided audit tab
+  document.getElementById('guidedLoadBtn').addEventListener('click', loadGuided);
+  initGuidedEvents();
 
   // Delegated handler for dynamically-injected buttons
   document.addEventListener('click', e => {
     const action = e.target.closest('[data-action]')?.dataset.action;
     if (action === 'backToResults') showSection('resultsSection');
+    if (action === 'inventory-rescan') scanInventory((document.getElementById('inventoryScanLabel')?.value || '').trim() || 'Default state');
+    if (action === 'inventory-csv') exportInventoryCsv();
+    if (action === 'inventory-json') exportInventoryJson();
   });
 }
 
@@ -305,6 +305,7 @@ async function runTest() {
 
     updateProgress(100, 'Complete!');
     currentResults = response.results;
+    getCriterionCounts();   // per-criterion element counts, kept with the results so exports and Ü Monitor get them
     await new Promise(r => setTimeout(r, 300));
     displayResults();
 
@@ -781,13 +782,6 @@ const TOOL_CONFIG = {
     onLabel:  'Hide Nav &amp; Menus',
     offLabel: 'Show Nav &amp; Menus',
     renderPanel: renderNavs
-  },
-  focus: {
-    getAction:   'getFocusIndicators',
-    clearAction: 'clearFocusIndicators',
-    onLabel:  'Hide Focus Indicators',
-    offLabel: 'Check Focus Indicators',
-    renderPanel: renderFocusIndicators
   }
 };
 
@@ -944,120 +938,6 @@ function renderNavs({ navs, summary }) {
   };
 }
 
-function renderFocusIndicators({ elements, summary }) {
-  let html = `<div class="heading-summary">
-    ${summary.total} focusable element${summary.total !== 1 ? 's' : ''}
-    ${summary.missing > 0 ? `· <span style="color:#dc2626;font-weight:600">${summary.missing} no visible change on focus ⚠</span>` : '· all showed a visible change on focus'}
-  </div>
-  <p class="hint">No screen reader test can catch this — JAWS and NVDA both announce "focused" whether or not anything is visible. This flags elements with no detectable style change at all; always confirm visually and check indicator contrast (WCAG 2.4.7 / 2.4.11).</p>`;
-
-  if (elements.length === 0) {
-    html += `<p class="hint">No focusable elements found on this page.</p>`;
-  } else {
-    html += elements.filter(e => !e.hasIndicator).map(e => `
-      <div class="heading-row">
-        <span class="heading-level-chip" style="background:#dc2626">${e.tag}</span>
-        <span class="heading-text">${escapeHtml(e.text) || '<em style="color:#999">(no visible text)</em>'}</span>
-        <span style="color:#d97706;font-size:10px">${escapeHtml(e.note)}</span>
-      </div>
-    `).join('');
-    if (summary.missing === 0) {
-      html += `<p class="hint">Every focusable element showed a style change on focus. This does not confirm the indicator is visible enough or high-contrast — only that something changes.</p>`;
-    }
-  }
-
-  return {
-    html,
-    statusText: `${summary.total} checked${summary.missing > 0 ? ` · ${summary.missing} flagged` : ''}`,
-    hasIssues: summary.missing > 0
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Tools — Live Region Watcher
-// ---------------------------------------------------------------------------
-
-async function toggleLiveRegions() {
-  const btn = document.getElementById('liveRegionBtn');
-  const panel = document.getElementById('liveRegionPanel');
-  const status = document.getElementById('liveRegionStatus');
-  const tab = await getActiveTab();
-
-  if (liveRegionActive) {
-    await chrome.tabs.sendMessage(tab.id, { action: 'stopLiveRegionWatch' }).catch(() => {});
-    liveRegionActive = false;
-    btn.textContent = 'Watch Live Regions';
-    btn.classList.remove('active');
-    btn.setAttribute('aria-pressed', 'false');
-    panel.classList.add('hidden');
-    panel.innerHTML = '';
-    status.textContent = '';
-    status.className = 'tool-status';
-    return;
-  }
-
-  const response = await chrome.tabs.sendMessage(tab.id, { action: 'startLiveRegionWatch' });
-  if (!response.success) return;
-
-  liveRegionActive = true;
-  btn.textContent = 'Stop Watching';
-  btn.classList.add('active');
-  btn.setAttribute('aria-pressed', 'true');
-
-  renderLiveRegionPanel(response.result.staticFindings, [], response.result.regionCount);
-
-  if (response.result.regionCount > 0) {
-    status.textContent = `${response.result.regionCount} region(s) · watching`;
-    status.className = 'tool-status has-issues';
-  } else {
-    status.textContent = 'No live regions found';
-    status.className = 'tool-status all-clear';
-  }
-}
-
-async function refreshLiveRegionLog() {
-  const tab = await getActiveTab();
-  const response = await chrome.tabs.sendMessage(tab.id, { action: 'getLiveRegionLog' });
-  if (!response.success) return;
-  renderLiveRegionPanel(response.result.staticFindings, response.result.log, response.result.staticFindings.length);
-}
-
-function renderLiveRegionPanel(staticFindings, log, regionCount) {
-  const panel = document.getElementById('liveRegionPanel');
-
-  let html = `<div class="heading-summary">${regionCount} live region${regionCount !== 1 ? 's' : ''} found</div>`;
-  html += `<p class="hint">Interact with the page now to trigger an update, then press Refresh Log. A region that never fires here — or that had content before you touched anything — won't announce to a real screen reader either.</p>`;
-  html += `<button id="refreshLiveRegionBtn" class="tool-btn" style="margin:8px 0;">Refresh Log</button>`;
-
-  if (regionCount === 0) {
-    html += `<p class="hint">No <code>aria-live</code>, <code>role="status"</code>, <code>role="alert"</code>, or <code>role="log"</code> elements found on this page.</p>`;
-  } else {
-    html += `<div class="heading-summary" style="margin-top:8px">Regions found</div>`;
-    html += staticFindings.map(f => `
-      <div class="heading-row">
-        <span class="heading-level-chip" style="background:${f.hasContentAlready ? '#d97706' : '#0891b2'}">${escapeHtml(f.politeness || f.role)}</span>
-        <span class="heading-text">${escapeHtml(f.selector)}</span>
-        ${f.note ? `<span style="color:#d97706;font-size:10px">⚠ ${escapeHtml(f.note)}</span>` : ''}
-      </div>
-    `).join('');
-  }
-
-  html += `<div class="heading-summary" style="margin-top:8px">Captured announcements (${log.length})</div>`;
-  if (log.length === 0) {
-    html += `<p class="hint">Nothing captured yet. Trigger the page action that should update one of the regions above, then press Refresh Log.</p>`;
-  } else {
-    html += log.slice().reverse().map(entry => `
-      <div class="heading-row">
-        <span class="heading-text">${escapeHtml(entry.selector)}: "${escapeHtml(entry.newText)}"</span>
-      </div>
-    `).join('');
-  }
-
-  panel.innerHTML = html;
-  panel.classList.remove('hidden');
-  document.getElementById('refreshLiveRegionBtn')?.addEventListener('click', refreshLiveRegionLog);
-}
-
 // ---------------------------------------------------------------------------
 // Export: JSON
 // ---------------------------------------------------------------------------
@@ -1194,9 +1074,9 @@ function switchTab(tabName) {
   document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
   document.getElementById(`${tabName}Tab`)?.classList.remove('hidden');
   if (tabName === 'vpat' && currentResults) renderVpatMatrix();
-  if (tabName === 'pulse') {
-    renderPulseConnectionUI();
-    if (pulseConfig.token) renderPulseSendTab();
+  if (tabName === 'monitor') {
+    renderMonitorConnectionUI();
+    if (monitorConfig.session) renderMonitorSendTab();
   }
 }
 
@@ -1221,25 +1101,17 @@ function updateProgress(percent, text) {
   document.getElementById('progressBar')?.setAttribute('aria-valuenow', percent);
 }
 
-async function stopLiveRegionWatchIfActive() {
-  if (!liveRegionActive) return;
-  liveRegionActive = false;
-  try {
-    const tab = await getActiveTab();
-    if (tab) await chrome.tabs.sendMessage(tab.id, { action: 'stopLiveRegionWatch' });
-  } catch (e) { /* tab may already be gone — nothing to clean up */ }
-}
-
 function resetToolState() {
   tabOrderActive = false;
   headingsActive = false;
   imageAltActive = false;
+  inventoryActive = false;
+  inventoryData = null;
   Object.keys(activeTools).forEach(k => { activeTools[k] = false; });
-  stopLiveRegionWatchIfActive();
 
-  const allBtns   = ['tabOrderBtn', 'headingsBtn', 'imageAltBtn', 'landmarksBtn', 'listsBtn', 'iconsBtn', 'navsBtn', 'contrastBtn', 'ariaBtn', 'focusBtn', 'liveRegionBtn'];
-  const allPanels = ['tabOrderPanel', 'headingsPanel', 'imageAltPanel', 'landmarksPanel', 'listsPanel', 'iconsPanel', 'navsPanel', 'contrastPanel', 'ariaPanel', 'focusPanel', 'liveRegionPanel'];
-  const allStatus = ['tabOrderStatus', 'headingsStatus', 'imageAltStatus', 'landmarksStatus', 'listsStatus', 'iconsStatus', 'navsStatus', 'contrastStatus', 'ariaStatus', 'focusStatus', 'liveRegionStatus'];
+  const allBtns   = ['tabOrderBtn', 'headingsBtn', 'imageAltBtn', 'landmarksBtn', 'listsBtn', 'iconsBtn', 'navsBtn', 'contrastBtn', 'ariaBtn', 'inventoryBtn'];
+  const allPanels = ['tabOrderPanel', 'headingsPanel', 'imageAltPanel', 'landmarksPanel', 'listsPanel', 'iconsPanel', 'navsPanel', 'contrastPanel', 'ariaPanel', 'inventoryPanel'];
+  const allStatus = ['tabOrderStatus', 'headingsStatus', 'imageAltStatus', 'landmarksStatus', 'listsStatus', 'iconsStatus', 'navsStatus', 'contrastStatus', 'ariaStatus', 'inventoryStatus'];
 
   allBtns.forEach(id => {
     const el = document.getElementById(id);
@@ -1253,8 +1125,6 @@ function resetToolState() {
     const el = document.getElementById(id);
     if (el) { el.textContent = ''; el.className = 'tool-status'; }
   });
-
-  document.getElementById('liveRegionBtn') && (document.getElementById('liveRegionBtn').textContent = 'Watch Live Regions');
 }
 
 function resetToConfig() {
@@ -1268,206 +1138,708 @@ function resetToConfig() {
 }
 
 // ---------------------------------------------------------------------------
-// Pulse integration — send VPAT Matrix verdicts into a Pulse page workspace
+// Element inventory
+// Counts every instance of each element type in every frame of the page.
+// Counting logic lives in inventory.js (injected into each frame); merging and
+// exports live in inventory-report.js (pure, tested in Node).
 // ---------------------------------------------------------------------------
 
-function loadPulseConfig() {
+let inventoryActive = false;
+let inventoryData   = null;
+
+async function runInventoryScan(label) {
+  const tab = await getActiveTab();
+  if (!tab) throw new Error('No active tab found');
+  const target = { tabId: tab.id, allFrames: true };
+  await chrome.scripting.executeScript({ target, files: ['inventory.js'] });
+  const injected = await chrome.scripting.executeScript({
+    target, func: lbl => window.__checkuInventory({ scanLabel: lbl }), args: [label]
+  });
+  return injected.map(r => ({ frameId: r.frameId, result: r.result }));
+}
+
+async function toggleInventory() {
+  const btn    = document.getElementById('inventoryBtn');
+  const panel  = document.getElementById('inventoryPanel');
+  const status = document.getElementById('inventoryStatus');
+
+  if (inventoryActive) {
+    inventoryActive = false;
+    btn.textContent = 'Element Inventory';
+    btn.classList.remove('active');
+    btn.setAttribute('aria-pressed', 'false');
+    panel.classList.add('hidden');
+    panel.innerHTML = '';
+    status.textContent = '';
+    status.className = 'tool-status';
+    return;
+  }
+  await scanInventory('Default state');
+}
+
+async function scanInventory(label) {
+  const btn    = document.getElementById('inventoryBtn');
+  const panel  = document.getElementById('inventoryPanel');
+  const status = document.getElementById('inventoryStatus');
+
+  status.textContent = 'Counting…';
+  status.className = 'tool-status';
+  try {
+    const frames = await runInventoryScan(label || 'Default state');
+    const merged = CheckuInventoryReport.mergeFrames(frames);
+    if (!merged) throw new Error('No frames could be scanned. Reload the page and try again.');
+    inventoryData   = merged;
+    inventoryActive = true;
+    btn.textContent = 'Hide Element Inventory';
+    btn.classList.add('active');
+    btn.setAttribute('aria-pressed', 'true');
+    panel.innerHTML = renderInventoryPanel(merged);
+    panel.classList.remove('hidden');
+    const counted = merged.types.reduce((n, t) => n + t.rendered, 0);
+    status.textContent = `${counted} counted · ${merged.frames.length} frame${merged.frames.length === 1 ? '' : 's'}`;
+    status.className = 'tool-status all-clear';
+    announce('Element inventory complete. ' + CheckuInventoryReport.summaryText(merged));
+    moveFocusTo('inventoryHeading');
+  } catch (e) {
+    status.textContent = 'Could not count: ' + e.message;
+    status.className = 'tool-status has-issues';
+  }
+}
+
+function renderInventoryPanel(m) {
+  const found = m.types.filter(t => t.rendered || t.hidden);
+  const none  = m.types.filter(t => !t.rendered && !t.hidden).map(t => t.name);
+  const reasons = r => Object.keys(r).map(k => `<li>${escapeHtml(k)}: ${r[k]}</li>`).join('');
+
+  const summaryRows = found.map(t => `
+    <tr>
+      <th scope="row">${escapeHtml(t.name)}</th>
+      <td>${t.rendered}</td><td>${t.hidden}</td><td>${t.ariaHiddenRendered}</td>
+      <td>${t.visuallyHiddenRendered}</td><td>${t.groups.filter(g => g.count).length}</td>
+    </tr>`).join('');
+
+  const details = found.map(t => `
+    <details>
+      <summary>${escapeHtml(t.name)}: ${t.rendered} counted in ${t.groups.filter(g => g.count).length} group${t.groups.filter(g => g.count).length === 1 ? '' : 's'}</summary>
+      ${t.hidden ? `<p class="inv-note">${t.hidden} hidden, not counted:</p><ul>${reasons(t.hiddenReasons)}</ul>` : ''}
+      <table class="inv-table">
+        <caption>Groups of similar ${escapeHtml(t.name.toLowerCase())}</caption>
+        <thead><tr><th scope="col">Group</th><th scope="col">Counted</th><th scope="col">Hidden</th><th scope="col">Example names (approximate)</th><th scope="col">Where</th></tr></thead>
+        <tbody>${t.groups.filter(g => g.count || g.hiddenCount).map(g => `
+          <tr>
+            <th scope="row">${escapeHtml(g.description || g.signature)}</th>
+            <td>${g.count}</td><td>${g.hiddenCount}</td>
+            <td>${escapeHtml((g.sampleNames || []).join(' | '))}</td>
+            <td>${g.frameUrl ? 'In frame ' + escapeHtml(g.frameUrl) : 'Main page'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </details>`).join('');
+
+  const approx = m.approximate.length ? `
+    <h4>Detected, not counted exactly</h4>
+    <p class="inv-note">These are detections, not exact counts. Confirm them by hand before using them as N.</p>
+    <ul>${m.approximate.map(a => `<li>${a.count}: ${escapeHtml(a.label)}${a.frameUrl ? ' (in frame ' + escapeHtml(a.frameUrl) + ')' : ''}</li>`).join('')}</ul>` : '';
+
+  const frames = `
+    <h4>Frames scanned (${m.frames.length})</h4>
+    <ul>${m.frames.map(f => `<li>${f.isTop ? 'Main page' : 'Frame'}: ${escapeHtml(f.url)}${f.hiddenInPage ? ' (hidden in the page, content not counted)' : ''}</li>`).join('')}</ul>`;
+
+  return `<div class="inv-panel">
+    <h3 id="inventoryHeading" tabindex="-1">Element inventory</h3>
+    <p class="inv-note">Scan label: ${escapeHtml(m.scanLabel)}. ${m.totalElementsScanned} elements scanned. Counted means rendered on the page. Hidden elements are listed but not counted.</p>
+    <div class="inv-scan">
+      <label for="inventoryScanLabel">Scan label (for example: menu open)</label>
+      <input id="inventoryScanLabel" type="text" value="${escapeHtml(m.scanLabel)}">
+      <button class="secondary-btn" data-action="inventory-rescan">Scan again</button>
+    </div>
+    <table class="inv-table">
+      <caption>Counts by element type for ${escapeHtml(m.pageTitle || m.pageUrl)}</caption>
+      <thead><tr><th scope="col">Element type</th><th scope="col">Counted</th><th scope="col">Hidden, not counted</th><th scope="col">Counted but aria-hidden</th><th scope="col">Counted but visually hidden</th><th scope="col">Groups</th></tr></thead>
+      <tbody>${summaryRows || '<tr><td colspan="6">No elements found.</td></tr>'}</tbody>
+    </table>
+    ${none.length ? `<p class="inv-note">None found: ${escapeHtml(none.join(', '))}.</p>` : ''}
+    <h4>Groups by element type</h4>
+    ${details}
+    ${approx}
+    ${frames}
+    <h4>What this could not count</h4>
+    <ul>${m.limits.map(l => `<li>${escapeHtml(l)}</li>`).join('')}</ul>
+    <div class="inv-actions">
+      <button class="secondary-btn" data-action="inventory-csv">Export CSV for the audit sheet</button>
+      <button class="secondary-btn" data-action="inventory-json">Export JSON</button>
+    </div>
+  </div>`;
+}
+
+function exportInventoryCsv() {
+  if (!inventoryData) return;
+  download(CheckuInventoryReport.inventoryCsv(inventoryData), `element-inventory-${dateStamp()}.csv`, 'text/csv;charset=utf-8');
+  announce('Inventory CSV downloaded. Paste its rows into the Inventory tab of the audit sheet and rename the group IDs.');
+}
+
+function exportInventoryJson() {
+  if (!inventoryData) return;
+  download(JSON.stringify(inventoryData, null, 2), `element-inventory-${dateStamp()}.json`, 'application/json');
+}
+
+// Ü Monitor integration: sign in, find the audit for this page, send results
+// ---------------------------------------------------------------------------
+
+function loadMonitorConfig() {
   return new Promise(resolve => {
-    chrome.storage.local.get(['pulseToken', 'pulseBaseUrl'], data => {
-      pulseConfig.token   = data.pulseToken || null;
-      pulseConfig.baseUrl = data.pulseBaseUrl || 'http://localhost:3000';
+    chrome.storage.local.get(['monitorSession', 'monitorBaseUrl'], data => {
+      monitorConfig.session = data.monitorSession || null;
+      monitorConfig.baseUrl = data.monitorBaseUrl || 'http://localhost:3000/api/v1';
       resolve();
     });
   });
 }
 
-function renderPulseConnectionUI() {
-  const connectSection = document.getElementById('pulseConnectSection');
-  const sendSection     = document.getElementById('pulseSendSection');
-  const connectedAs     = document.getElementById('pulseConnectedAs');
+// A client that renews its sign-in when needed and keeps the renewed tokens.
+const monitorApi = () => UMonitorClient.createClient({
+  baseUrl: monitorConfig.baseUrl,
+  session: monitorConfig.session,
+  onSession: s => { monitorConfig.session = s; chrome.storage.local.set({ monitorSession: s }); },
+});
 
-  const connected = !!pulseConfig.token;
-  connectSection.classList.toggle('hidden', connected);
-  sendSection.classList.toggle('hidden', !connected);
-  if (connected) connectedAs.textContent = `Connected — ${pulseConfig.baseUrl}`;
+function setStatus(el, text, kind) {
+  el.textContent = text;
+  el.className = 'tool-status' + (kind ? ' ' + kind : '');
 }
 
-async function connectToPulse() {
-  const tokenInput = document.getElementById('pulseTokenInput');
-  const urlInput   = document.getElementById('pulseUrlInput');
-  const status     = document.getElementById('pulseConnectStatus');
+function renderMonitorConnectionUI() {
+  const connected = !!monitorConfig.session;
+  document.getElementById('monitorConnectSection').classList.toggle('hidden', connected);
+  document.getElementById('monitorSendSection').classList.toggle('hidden', !connected);
+  document.getElementById('monitorUrlInput').value = monitorConfig.baseUrl;
+  if (connected) document.getElementById('monitorConnectedAs').textContent = `Connected as ${monitorConfig.session.user?.email || 'you'}`;
+}
 
-  const token   = tokenInput.value.trim();
-  const baseUrl = urlInput.value.trim().replace(/\/+$/, '');
+async function connectToMonitor() {
+  const status   = document.getElementById('monitorConnectStatus');
+  const btn      = document.getElementById('monitorConnectBtn');
+  const baseUrl  = document.getElementById('monitorUrlInput').value.trim().replace(/\/+$/, '');
+  const email    = document.getElementById('monitorEmailInput').value.trim();
+  const password = document.getElementById('monitorPasswordInput').value;
+  if (!baseUrl) { setStatus(status, 'Enter the Ü Monitor server address first.', 'has-issues'); return; }
+  if (!email || !password) { setStatus(status, 'Enter your email and password.', 'has-issues'); return; }
 
-  if (!token) {
-    status.textContent = 'Enter a token first.';
-    status.className = 'tool-status has-issues';
-    return;
-  }
-  if (!baseUrl) {
-    status.textContent = 'Enter the Pulse URL first.';
-    status.className = 'tool-status has-issues';
-    return;
-  }
-
-  status.textContent = 'Verifying…';
-  status.className = 'tool-status';
-
+  btn.disabled = true;
+  setStatus(status, 'Signing in…');
   try {
-    const tab = await getActiveTab();
-    const testUrl = tab?.url || 'https://example.com';
-    const res = await fetch(`${baseUrl}/api/extension/context?url=${encodeURIComponent(testUrl)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (res.status === 401) throw new Error('Invalid or revoked token.');
-    if (res.status === 403) throw new Error('This account cannot use the extension integration.');
-    if (!res.ok) throw new Error(`Unexpected error (${res.status}).`);
-
-    pulseConfig.token = token;
-    pulseConfig.baseUrl = baseUrl;
-    chrome.storage.local.set({ pulseToken: token, pulseBaseUrl: baseUrl });
-
-    tokenInput.value = '';
-    status.textContent = '';
-    renderPulseConnectionUI();
-    await renderPulseSendTab();
+    const session = await UMonitorClient.signIn({ baseUrl, email, password });
+    monitorConfig = { session, baseUrl };
+    chrome.storage.local.set({ monitorSession: session, monitorBaseUrl: baseUrl });
+    document.getElementById('monitorPasswordInput').value = '';
+    setStatus(status, '');
+    renderMonitorConnectionUI();
+    announce('Connected to U Monitor.');
+    await renderMonitorSendTab();
   } catch (err) {
-    status.textContent = err.message || 'Could not connect to Pulse.';
-    status.className = 'tool-status has-issues';
+    setStatus(status, err.message || 'Could not connect to Ü Monitor.', 'has-issues');
+  } finally {
+    btn.disabled = false;
   }
 }
 
-function disconnectFromPulse() {
-  pulseConfig.token = null;
-  pulseContext = null;
-  chrome.storage.local.remove(['pulseToken']);
-  renderPulseConnectionUI();
+function disconnectFromMonitor() {
+  monitorConfig.session = null;
+  monitorContext = null;
+  chrome.storage.local.remove(['monitorSession']);
+  renderMonitorConnectionUI();
 }
 
-async function renderPulseSendTab() {
-  if (!pulseConfig.token) return;
+// The audit the tester picked, plus its property.
+function selectedMonitorAudit() {
+  if (!monitorContext?.matches?.length) return null;
+  const match = monitorContext.matches[Number(document.getElementById('monitorPropertySelect').value) || 0];
+  const audit = match?.audits[Number(document.getElementById('monitorAuditSelect').value) || 0];
+  return audit ? { match, audit } : null;
+}
 
-  const matchStatus   = document.getElementById('pulseMatchStatus');
-  const picker        = document.getElementById('pulseMatchPicker');
-  const sendBtn       = document.getElementById('pulseSendBtn');
-  const websiteSelect = document.getElementById('pulseWebsiteSelect');
-  const auditSelect   = document.getElementById('pulseAuditSelect');
-  const sendStatus    = document.getElementById('pulseSendStatus');
+function updateMonitorButtons() {
+  const sel = selectedMonitorAudit();
+  const has = { Scan: !!currentResults, Inventory: !!inventoryData, Verdicts: Object.keys(vpatVerdicts).length > 0 };
+  for (const [name, ready] of Object.entries(has)) {
+    document.getElementById(`monitorSend${name}Btn`).disabled = !(sel && ready);
+  }
+  document.getElementById('monitorPlanBtn').disabled = !(sel && inventoryData);
+}
 
-  sendStatus.textContent = '';
-  sendBtn.disabled = true;
+function refreshMonitorPageStatus() {
+  const sel = selectedMonitorAudit();
+  const page = sel?.audit.page;
+  document.getElementById('monitorPageStatus').textContent = !sel ? '' : page
+    ? `This page is on the audit as ${page.code}, ${page.name}.`
+    : 'This page is not on the audit yet. It will be added when you send results.';
+  updateMonitorButtons();
+}
+
+async function renderMonitorSendTab() {
+  if (!monitorConfig.session) return;
+  const matchStatus = document.getElementById('monitorMatchStatus');
+  const picker      = document.getElementById('monitorMatchPicker');
+  const propSelect  = document.getElementById('monitorPropertySelect');
+  const auditSelect = document.getElementById('monitorAuditSelect');
+  const pageStatus  = document.getElementById('monitorPageStatus');
+
+  setStatus(document.getElementById('monitorSendStatus'), '');
   picker.classList.add('hidden');
-  matchStatus.textContent = 'Looking up this page in Pulse…';
-  matchStatus.className = 'tool-status';
+  pageStatus.textContent = '';
+  monitorContext = null;
+  updateMonitorButtons();
+  setStatus(matchStatus, 'Looking up this page in Ü Monitor…');
 
   const tab = await getActiveTab();
-  if (!tab?.url) {
-    matchStatus.textContent = 'No active tab.';
-    return;
-  }
+  if (!tab?.url) { setStatus(matchStatus, 'No active tab.'); return; }
 
   try {
-    const res = await fetch(`${pulseConfig.baseUrl}/api/extension/context?url=${encodeURIComponent(tab.url)}`, {
-      headers: { Authorization: `Bearer ${pulseConfig.token}` },
-    });
-    if (!res.ok) throw new Error(`Lookup failed (${res.status}).`);
-    pulseContext = await res.json();
-
-    if (!pulseContext.matches || pulseContext.matches.length === 0) {
-      matchStatus.textContent = 'No Pulse website matches this domain yet.';
+    monitorContext = await monitorApi().context(tab.url);
+    if (!monitorContext.matches.length) {
+      setStatus(matchStatus, 'No Ü Monitor website matches this address yet. Ask an admin to add it.', 'has-issues');
       return;
     }
+    propSelect.innerHTML = monitorContext.matches
+      .map((m, i) => `<option value="${i}">${escapeHtml(m.propertyName)}</option>`).join('');
 
-    websiteSelect.innerHTML = pulseContext.matches
-      .map((m, i) => `<option value="${i}">${escapeHtml(m.organizationName)} — ${escapeHtml(m.websiteName)}</option>`)
-      .join('');
-
-    const verdictCount = Object.keys(vpatVerdicts).length;
-
-    const populateAudits = () => {
-      const match = pulseContext.matches[Number(websiteSelect.value)];
-      if (!match.audits.length) {
-        auditSelect.innerHTML = '<option value="">No open audits for this website</option>';
-        sendBtn.disabled = true;
-        return;
-      }
-      auditSelect.innerHTML = match.audits
-        .map(a => `<option value="${a.id}">${escapeHtml(a.name)} (WCAG ${a.wcagVersion} ${a.targetLevel})</option>`)
-        .join('');
-      sendBtn.disabled = verdictCount === 0;
+    const showPage = refreshMonitorPageStatus;
+    const fillAudits = () => {
+      const m = monitorContext.matches[Number(propSelect.value)];
+      auditSelect.innerHTML = m.audits.length
+        ? m.audits.map((a, i) => `<option value="${i}">${escapeHtml(a.name)}, round ${a.roundNumber}</option>`).join('')
+        : '<option value="">No open audits for this website</option>';
+      showPage();
     };
-
-    websiteSelect.onchange = populateAudits;
-    populateAudits();
-
+    propSelect.onchange = fillAudits;
+    auditSelect.onchange = showPage;
+    fillAudits();
     picker.classList.remove('hidden');
-    matchStatus.textContent = pulseContext.matches.length === 1
-      ? `Matched: ${pulseContext.matches[0].websiteName}`
-      : `${pulseContext.matches.length} matching websites — pick one.`;
-
-    if (verdictCount === 0) {
-      matchStatus.textContent += ' (Set conformance levels in the VPAT Matrix tab first.)';
-    }
+    setStatus(matchStatus, monitorContext.matches.length === 1
+      ? `Matched: ${monitorContext.matches[0].propertyName}`
+      : `${monitorContext.matches.length} matching websites. Pick one.`);
   } catch (err) {
-    matchStatus.textContent = err.message || 'Lookup failed.';
-    matchStatus.className = 'tool-status has-issues';
+    if (err.status === 401) disconnectFromMonitor();
+    setStatus(matchStatus, err.message || 'Lookup failed.', 'has-issues');
   }
 }
 
-async function sendVerdictsToPulse() {
-  const sendStatus    = document.getElementById('pulseSendStatus');
-  const websiteSelect = document.getElementById('pulseWebsiteSelect');
-  const auditSelect   = document.getElementById('pulseAuditSelect');
+// Find or create the audit page for a URL and scan state.
+async function ensureMonitorPage(sel, url, title, stateLabel) {
+  const state = stateLabel || 'Default state';
+  const known = state === 'Default state' && sel.audit.page && sel.audit.page.url === url
+    ? sel.audit.page : monitorPages[`${sel.audit.auditId}|${url}|${state}`];
+  if (known) return known;
+  const page = await monitorApi().addPage(sel.audit.auditId, {
+    name: state === 'Default state' ? (title || url) : `${title || url} (${state})`,
+    url, stateLabel: state,
+  });
+  monitorPages[`${sel.audit.auditId}|${url}|${state}`] = page;
+  if (state === 'Default state') sel.audit.page = page;
+  return page;
+}
 
-  if (!pulseContext || !pulseContext.matches?.length) return;
-
-  const match   = pulseContext.matches[Number(websiteSelect.value)];
-  const auditId = auditSelect.value;
-  if (!match || !auditId) {
-    sendStatus.textContent = 'Pick a website and audit first.';
-    sendStatus.className = 'tool-status has-issues';
-    return;
-  }
-
-  const entries = Object.entries(vpatVerdicts).filter(([, v]) => v && PULSE_CONFORMANCE_MAP[v.conformance]);
-  if (entries.length === 0) {
-    sendStatus.textContent = 'No VPAT verdicts recorded yet — set conformance levels in the VPAT Matrix tab first.';
-    sendStatus.className = 'tool-status has-issues';
-    return;
-  }
-
-  const tab = await getActiveTab();
-  sendStatus.textContent = `Sending ${entries.length} criteria…`;
-  sendStatus.className = 'tool-status';
-
+// One send button's shared flow: disable, run, report, re-enable.
+async function monitorSend(label, work) {
+  const status = document.getElementById('monitorSendStatus');
+  const sel = selectedMonitorAudit();
+  if (!sel) return;
+  setStatus(status, `Sending ${label}…`);
+  document.querySelectorAll('.monitor-send-list button').forEach(b => { b.disabled = true; });
   try {
-    const res = await fetch(`${pulseConfig.baseUrl}/api/extension/assessments`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${pulseConfig.token}` },
-      body: JSON.stringify({
-        websiteId: match.websiteId,
-        auditId,
-        pageUrl: tab.url,
-        pageTitle: tab.title || null,
-        assessments: entries.map(([sc, v]) => ({
-          criterionId: sc,
-          vpatConformanceLevel: PULSE_CONFORMANCE_MAP[v.conformance],
-          notes: v.remark || null,
-        })),
-      }),
-    });
-
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `Send failed (${res.status}).`);
-
-    sendStatus.textContent = `Sent ${data.succeeded} of ${data.succeeded + data.failed} criteria to Pulse.`;
-    sendStatus.className = 'tool-status all-clear';
+    const msg = await work(sel);
+    setStatus(status, msg, 'all-clear');
+    announce(msg);
   } catch (err) {
-    sendStatus.textContent = err.message || 'Send failed.';
-    sendStatus.className = 'tool-status has-issues';
+    if (err.status === 401) disconnectFromMonitor();
+    setStatus(status, err.message || 'Send failed.', 'has-issues');
+  } finally {
+    refreshMonitorPageStatus();
   }
+}
+
+function sendScanToMonitor() {
+  return monitorSend('scan results', async sel => {
+    const page = await ensureMonitorPage(sel, currentResults.url, (await getActiveTab())?.title, 'Default state');
+    getCriterionCounts();   // make sure the per-criterion element counts are on the results before they are sent
+    const payload = UMonitorClient.buildScanPayload(currentResults, { pageId: page.id, engineVersion: AXE_VERSION });
+    const out = await monitorApi().postScan(sel.audit.auditId, payload);
+    const counted = payload.criteria ? Object.keys(payload.criteria).length : 0;
+    return `Sent scan to ${page.code}: ${out.newFingerprints} new issue${out.newFingerprints === 1 ? '' : 's'}, ${out.knownFingerprints} already known. Element counts sent for ${counted} criteri${counted === 1 ? 'on' : 'a'}.`;
+  });
+}
+
+function sendInventoryToMonitor() {
+  return monitorSend('element inventory', async sel => {
+    const page = await ensureMonitorPage(sel, inventoryData.pageUrl, inventoryData.pageTitle, inventoryData.scanLabel);
+    const payload = UMonitorClient.buildInventoryPayload(inventoryData);
+    const groups = await monitorApi().putInventory(sel.audit.auditId, page.id, payload);
+    return `Sent inventory to ${page.code}: ${groups.length} group${groups.length === 1 ? '' : 's'} saved.`;
+  });
+}
+
+// AI draft test plan: sends the inventory, then asks Claude (through Ü Monitor) for a checklist for this page.
+// The server refuses unless the client has turned AI on. The plan only suggests; the tester decides.
+async function planPageWithAi() {
+  const status = document.getElementById('monitorSendStatus');
+  const panel  = document.getElementById('monitorPlanPanel');
+  const sel = selectedMonitorAudit();
+  if (!sel || !inventoryData) return;
+  panel.classList.add('hidden');
+  document.querySelectorAll('.monitor-send-list button').forEach(b => { b.disabled = true; });
+  setStatus(status, 'Planning this page. This can take a minute or two…');
+  try {
+    const page = await ensureMonitorPage(sel, inventoryData.pageUrl, inventoryData.pageTitle, inventoryData.scanLabel);
+    const groups = await monitorApi().putInventory(sel.audit.auditId, page.id, UMonitorClient.buildInventoryPayload(inventoryData));
+    const out = await monitorApi().planPage(sel.audit.auditId, page.id);
+    renderPlan(panel, out, page, groups);
+    setStatus(status, `Draft plan ready for ${page.code}: ${out.plan.items.length} checks. It cost about $${out.costUsd.toFixed(2)}.`, 'all-clear');
+    announce(`Draft plan ready with ${out.plan.items.length} checks.`);
+    panel.classList.remove('hidden');
+    panel.focus();
+  } catch (err) {
+    if (err.status === 401) disconnectFromMonitor();
+    setStatus(status, err.message || 'Could not make a plan.', 'has-issues');
+  } finally {
+    refreshMonitorPageStatus();
+  }
+}
+
+function renderPlan(panel, out, page, groups) {
+  const label = code => {
+    if (!code) return 'Whole page';
+    const g = groups.find(x => x.code === code);
+    return g ? `${code}, ${g.elementType}, ${g.instances} on the page${g.description ? ` (${g.description})` : ''}` : code;
+  };
+  const METHODS = [['keyboard', 'Keyboard'], ['jaws', 'JAWS'], ['nvda', 'NVDA'], ['voiceover', 'VoiceOver'], ['visual', 'Look and judge']];
+  const PRIORITY = { high: 'High priority', medium: 'Medium priority', low: 'Low priority' };
+  const items = [...out.plan.items].sort((a, b) => ['high', 'medium', 'low'].indexOf(a.priority) - ['high', 'medium', 'low'].indexOf(b.priority));
+  panel.innerHTML = `
+    <h4 id="planHeading">AI draft test plan for ${escapeHtml(page.code)} ${escapeHtml(page.name)}</h4>
+    <p class="monitor-hint">Drafted by AI (Claude, made by Anthropic). It only suggests. Check it before you rely on it. A person decides every result.</p>
+    <p>${escapeHtml(out.plan.summary)}</p>
+    ${items.map(it => `
+      <h5>${escapeHtml(label(it.groupCode))}: ${escapeHtml(it.checkId)} (${PRIORITY[it.priority]})</h5>
+      <p>${escapeHtml(it.whyHere)}</p>
+      ${METHODS.filter(([k]) => (it.steps[k] || []).length).map(([k, name]) => `
+        <p class="plan-method">${name}</p><ol>${it.steps[k].map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ol>`).join('')}
+    `).join('')}
+    ${out.plan.notCovered && out.plan.notCovered.length ? `<h5>Check by hand: the inventory could not count these</h5><ul>${out.plan.notCovered.map(n => `<li>${escapeHtml(n)}</li>`).join('')}</ul>` : ''}
+    ${out.dropped ? `<p class="monitor-hint">${out.dropped} suggested item${out.dropped === 1 ? ' was' : 's were'} removed because they did not match the team's checks.</p>` : ''}
+    <div class="monitor-plan-actions">
+      <button type="button" class="primary-btn" data-plan="accepted">I will use this plan</button>
+      <button type="button" class="secondary-btn" data-plan="rejected">Discard this plan</button>
+    </div>`;
+  panel.setAttribute('role', 'region');
+  panel.setAttribute('aria-labelledby', 'planHeading');
+  panel.querySelectorAll('[data-plan]').forEach(btn => btn.addEventListener('click', async () => {
+    const status = document.getElementById('monitorSendStatus');
+    try {
+      await monitorApi().decidePlan(out.runId, btn.dataset.plan);
+      setStatus(status, btn.dataset.plan === 'accepted' ? 'Noted: you are using this plan.' : 'Plan discarded.', 'all-clear');
+      if (btn.dataset.plan === 'rejected') panel.classList.add('hidden');
+    } catch (err) { setStatus(status, err.message || 'Could not save your choice.', 'has-issues'); }
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Guided audit: a checklist for this page, answered here and saved to Ü Monitor (guided-audit.js)
+// ---------------------------------------------------------------------------
+let guided = null;   // { sel, key, checklist, drafts, filter, open }
+const storageGet = k => new Promise(r => chrome.storage.local.get([k], d => r(d[k])));
+const storageSet = (k, v) => new Promise(r => chrome.storage.local.set({ [k]: v }, r));
+
+async function loadGuided() {
+  const status = document.getElementById('guidedLoadStatus');
+  if (!monitorConfig.session) { setStatus(status, 'Sign in on the Ü Monitor tab first.', 'has-issues'); return; }
+  setStatus(status, 'Loading the checklist…');
+  try {
+    if (!monitorContext) await renderMonitorSendTab();
+    const sel = selectedMonitorAudit();
+    if (!sel) { setStatus(status, 'No audit matches this page yet. Check the Ü Monitor tab.', 'has-issues'); return; }
+    const tab = await getActiveTab();
+    const state = inventoryData && inventoryData.pageUrl === tab.url ? inventoryData.scanLabel : 'Default state';
+    const page = await ensureMonitorPage(sel, tab.url, tab.title, state);
+    const checklist = await monitorApi().checklist(sel.audit.auditId, page.id);
+    const key = `guided:${sel.audit.auditId}:${page.id}`;
+    const local = (await storageGet(key)) || {};
+    const drafts = UCheckGuided.initialDrafts(checklist, local);
+    const first = UCheckGuided.orderGroups(checklist)[0];
+    guided = { sel, key, checklist, drafts, filter: 'all', open: first ? { [first.code]: true } : {} };
+    setStatus(status, '');
+    renderGuidedTab();
+    announce(`Checklist loaded for ${page.code}.`);
+    document.getElementById('guidedHeading')?.setAttribute('tabindex', '-1');
+    document.getElementById('guidedHeading')?.focus();
+  } catch (err) {
+    if (err.status === 401) disconnectFromMonitor();
+    setStatus(status, err.message || 'Could not load the checklist.', 'has-issues');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Show on page: highlight the elements a check is about, step through them, move focus to one (highlight.js)
+// ---------------------------------------------------------------------------
+const hlRun = async (tabId, opts) => chrome.scripting.executeScript({ target: { tabId, ...opts.target }, func: opts.func, args: opts.args || [] });
+
+async function hlShow(key) {
+  if (!guided) return;
+  const groupCode = key.split('|')[0];
+  const group = guided.checklist.groups.find(g => g.code === groupCode);
+  const status = document.getElementById('guidedSaveStatus');
+  try {
+    const tab = await getActiveTab();
+    // inventory.js finds the elements, highlight.js draws on them; both are safe to inject again
+    await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ['inventory.js', 'highlight.js'] });
+    const res = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func: (t, s) => window.__checkuHL.show(t, s), args: [group.elementType, group.signature] });
+    const items = [];
+    res.forEach(r => (r.result && r.result.items || []).forEach((it, i) => items.push({ ...it, frameId: r.frameId, local: i })));
+    guided.hlAll = null;
+    guided.hl = { groupCode, tabId: tab.id, items, index: -1, message: '' };
+    if (!items.length) {
+      guided.hl.message = 'Nothing was found on the page for this group. The page may have changed. Run the Element Inventory again.';
+      renderGuidedTab({ selector: '[data-action="hl-clear"]' });
+      announce(guided.hl.message);
+      return;
+    }
+    await hlGo(0, `Highlighted ${items.length} ${items.length === 1 ? 'element' : 'elements'} on the page. `, '[data-action="hl-next"]');
+  } catch (err) {
+    setStatus(status, 'Could not show this on the page: ' + (err.message || 'the page does not allow it') + '. Some pages, such as Chrome\'s own pages and the Web Store, block extensions.', 'has-issues');
+  }
+}
+
+// Highlight every group on the page at once, one color each, with a legend. Good for seeing the whole page's structure.
+async function hlShowAll() {
+  if (!guided) return;
+  const status = document.getElementById('guidedSaveStatus');
+  const groups = guided.checklist.groups.filter(g => !UCheckGuided.isPageLevel(g)).map((g, i) => ({ code: g.code, typeId: g.elementType, signature: g.signature, color: UCheckGuided.PALETTE[i % UCheckGuided.PALETTE.length], type: g.elementType, expected: g.instances }));
+  try {
+    const tab = await getActiveTab();
+    await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ['inventory.js', 'highlight.js'] });
+    const wanted = groups.map(g => ({ code: g.code, typeId: g.typeId, signature: g.signature, color: g.color }));
+    const res = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func: w => window.__checkuHL.showMany(w), args: [wanted] });
+    const found = {}; let total = 0;
+    res.forEach(r => { if (r.result) { total += r.result.total; Object.keys(r.result.counts).forEach(c => { found[c] = (found[c] || 0) + r.result.counts[c]; }); } });
+    const legend = groups.map(g => ({ code: g.code, type: g.type, color: g.color, expected: g.expected, found: found[g.code] || 0 }));
+    const off = legend.filter(l => l.found !== l.expected);
+    const message = `Highlighted ${total} element${total === 1 ? '' : 's'} in ${groups.length} groups.` + (off.length ? ` ${off.length} group${off.length === 1 ? ' shows' : 's show'} a different number than the inventory counted, so the page may have changed. Run the Element Inventory again if that matters.` : ' Every group matches the inventory.');
+    guided.hl = null; guided.hlAll = { tabId: tab.id, message, legend };
+    renderGuidedTab({ selector: '[data-action="hl-clear-all"]' });
+    announce(message);
+  } catch (err) {
+    setStatus(status, 'Could not highlight the page: ' + (err.message || 'the page does not allow it') + '.', 'has-issues');
+  }
+}
+
+async function hlGo(index, prefix, focusSelector) {
+  const hl = guided.hl;
+  const n = hl.items.length;
+  hl.index = ((index % n) + n) % n;
+  const it = hl.items[hl.index];
+  // make this the current one in its own frame, and clear the "current" mark in the others
+  await hlRun(hl.tabId, { target: { allFrames: true }, func: () => window.__checkuHL && window.__checkuHL.setCurrent(-1) });
+  await hlRun(hl.tabId, { target: { frameIds: [it.frameId] }, func: i => window.__checkuHL.setCurrent(i), args: [it.local] });
+  hl.message = `${prefix || ''}Showing ${hl.index + 1} of ${n}: ${it.name}. It is a ${it.tag}${it.role ? ' with role ' + it.role : ''}.`;
+  renderGuidedTab({ selector: focusSelector || '[data-action="hl-next"]' });
+  announce(hl.message);
+}
+
+const hlStep = delta => { if (guided && guided.hl && guided.hl.items.length) hlGo(guided.hl.index + delta, '', delta > 0 ? '[data-action="hl-next"]' : '[data-action="hl-prev"]'); };
+
+async function hlFocus() {
+  const hl = guided && guided.hl; if (!hl || hl.index < 0) return;
+  const it = hl.items[hl.index];
+  const r = await hlRun(hl.tabId, { target: { frameIds: [it.frameId] }, func: i => window.__checkuHL.focus(i), args: [it.local] });
+  hl.message = r[0] && r[0].result && r[0].result.ok ? `Keyboard focus is now on ${it.name} on the page.` : `Could not move focus to ${it.name}.`;
+  renderGuidedTab({ selector: '[data-action="hl-focus"]' });
+  announce(hl.message);
+}
+
+async function hlClear() {
+  const hl = guided && (guided.hl || guided.hlAll); if (!hl) return;
+  try { await hlRun(hl.tabId, { target: { allFrames: true }, func: () => window.__checkuHL && window.__checkuHL.clear() }); } catch (e) { /* the page may be gone */ }
+  guided.hl = null; guided.hlAll = null;
+  renderGuidedTab();
+  announce('Highlights cleared.');
+}
+
+// ---------------------------------------------------------------------------
+// Screenshots as evidence: capture the visible part of the page (with any highlight on it) and attach it to a check
+// ---------------------------------------------------------------------------
+// Attach an image file chosen from this computer (a phone screenshot, another tool's capture) to a check.
+async function attachFile(input) {
+  if (!guided) return;
+  const key = input.dataset.key, file = input.files && input.files[0];
+  const status = document.getElementById('guidedSaveStatus');
+  input.value = '';
+  const problem = UCheckGuided.checkImageFile(file);
+  if (problem) { setStatus(status, problem, 'has-issues'); announce(problem); return; }
+  const [groupCode, checkId] = key.split('|');
+  setStatus(status, 'Attaching the image…');
+  try {
+    const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(new Error('The file could not be read.')); r.readAsDataURL(file); });
+    await attachImage(key, dataUrl, file.type, `Image ${file.name.replace(/\.[a-z0-9]+$/i, '')} for ${checkId} on ${groupCode}`);
+  } catch (err) {
+    if (err.status === 401) disconnectFromMonitor();
+    setStatus(status, err.message || 'Could not attach the image.', 'has-issues');
+  }
+}
+
+// Shared by "take a screenshot" and "attach a file": uploads the image, adds it to the check, and puts focus in its description.
+async function attachImage(key, dataUrl, type, caption) {
+  const d = guided.drafts[key] || (guided.drafts[key] = UCheckGuided.emptyDraft());
+  const out = await monitorApi().uploadEvidence(guided.sel.audit.auditId, { kind: 'screenshot', contentType: type, dataBase64: dataUrl.split(',')[1], caption, pageId: guided.checklist.page.id });
+  d.evidence = [...(d.evidence || []), { id: out.evidenceId, caption, url: out.url }];
+  d.dirty = true; d.error = '';
+  storageSet(guided.key, guided.drafts);
+  renderGuidedTab();
+  const input = document.querySelector(`#guidedBody [data-key="${CSS.escape(key)}"] [data-shot-caption="${CSS.escape(out.evidenceId)}"]`);
+  if (input) { input.focus(); input.select(); }
+  const msg = 'Image attached. Describe what it shows, then save your answers.';
+  setStatus(document.getElementById('guidedSaveStatus'), msg, 'all-clear');
+  announce(msg);
+}
+
+async function takeShot(key) {
+  if (!guided) return;
+  const status = document.getElementById('guidedSaveStatus');
+  const d = guided.drafts[key] || (guided.drafts[key] = UCheckGuided.emptyDraft());
+  if ((d.evidence || []).length >= UCheckGuided.MAX_SHOTS) return;
+  const [groupCode, checkId] = key.split('|');
+  setStatus(status, 'Taking the screenshot…');
+  try {
+    const tab = await getActiveTab();
+    let type = 'image/png';
+    let dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    if (dataUrl.length > 7_000_000) { type = 'image/jpeg'; dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 85 }); }   // very large page: smaller file
+    await attachImage(key, dataUrl, type, `Screenshot for ${checkId} on ${groupCode}`);
+  } catch (err) {
+    if (err.status === 401) disconnectFromMonitor();
+    setStatus(status, (err.message && /capture|permission|Cannot access/i.test(err.message) ? 'Chrome would not capture this tab. Make the page tab active and try again. Pages such as chrome:// and the Web Store cannot be captured.' : err.message) || 'Could not take the screenshot.', 'has-issues');
+  }
+}
+
+async function removeShot(key, id) {
+  if (!guided) return;
+  const d = guided.drafts[key]; if (!d) return;
+  try { await monitorApi().deleteEvidence(id); } catch (err) { if (err.status !== 404) { setStatus(document.getElementById('guidedSaveStatus'), 'Could not remove it: ' + err.message, 'has-issues'); return; } }
+  d.evidence = (d.evidence || []).filter(s => s.id !== id); d.dirty = true;
+  storageSet(guided.key, guided.drafts);
+  renderGuidedTab();
+  document.querySelector(`#guidedBody [data-key="${CSS.escape(key)}"] [data-action="shot"]`)?.focus();
+  announce('Screenshot removed. Save your answers to keep the change.');
+}
+
+// "Apply this answer to the other groups": copies a Yes, N/A or Unsure to the unanswered groups of the same type.
+function applyGuided(key) {
+  if (!guided) return;
+  const [groupCode, checkId] = key.split('|');
+  const r = UCheckGuided.applyToOthers(guided.checklist, guided.drafts, groupCode, checkId);
+  if (r.error) { announce(r.error); return; }
+  clearTimeout(guided._t); storageSet(guided.key, guided.drafts);
+  renderGuidedTab();
+  // the button that was pressed is rebuilt, so put focus back on it
+  document.querySelector(`#guidedBody [data-key="${CSS.escape(key)}"] [data-action="apply"]`)?.focus();
+  const text = r.applied.length
+    ? `Applied this answer to ${r.applied.length} other group${r.applied.length === 1 ? '' : 's'}.${r.skipped.length ? ` ${r.skipped.length} already had an answer and ${r.skipped.length === 1 ? 'was' : 'were'} left alone.` : ''} Not saved yet.`
+    : `Nothing changed. The other groups already have an answer.`;
+  setStatus(document.getElementById('guidedSaveStatus'), text, r.applied.length ? 'all-clear' : '');
+  announce(text);
+}
+
+function renderGuidedTab(focus) {
+  if (!guided) return;
+  const body = document.getElementById('guidedBody');
+  body.querySelectorAll('details.g-group').forEach(d => { guided.open[d.dataset.group] = d.open; });
+  UCheckGuided.renderGuided(body, guided);
+  if (focus) {
+    const el = focus.selector ? body.querySelector(focus.selector) : body.querySelector(`[data-key="${CSS.escape(focus.key)}"] [data-field="${focus.field}"]${focus.field === 'result' ? ':checked' : ''}`);
+    if (el) el.focus();
+  }
+}
+
+function initGuidedEvents() {
+  const body = document.getElementById('guidedBody');
+  let timer = null;
+  const persist = () => { clearTimeout(timer); timer = setTimeout(() => guided && storageSet(guided.key, guided.drafts), 300); };
+
+  const onField = (e, rerender) => {
+    const el = e.target.closest('[data-field]');
+    const fs = e.target.closest('[data-key]');
+    if (!el || !fs || !guided) return;
+    const d = guided.drafts[fs.dataset.key] || (guided.drafts[fs.dataset.key] = UCheckGuided.emptyDraft());
+    const field = el.dataset.field;
+    d[field] = el.type === 'checkbox' ? el.checked : el.value;
+    d.dirty = true; d.error = '';
+    persist();
+    if (rerender) renderGuidedTab({ key: fs.dataset.key, field });
+    else { const p = UCheckGuided.progress(guided.checklist, guided.drafts); const el2 = document.getElementById('guidedProgress'); if (el2) el2.textContent = `${p.answered} of ${p.total} checks answered${p.unsaved ? ', ' + p.unsaved + ' not saved yet' : ''}.`; const st = fs.querySelector('.g-status'); if (st) st.textContent = 'Not saved yet'; }
+  };
+  // choosing a result or ticking "reviewed all" changes which fields show, so those redraw; typing does not
+  body.addEventListener('change', e => { if (e.target.matches('[data-action="shot-file"]')) attachFile(e.target); else if (e.target.matches('[data-field="result"], [data-field="reviewedAll"]')) onField(e, true); else if (e.target.matches('[data-field]')) onField(e, false); else if (e.target.matches('[data-action="filter"]')) { guided.filter = e.target.value; renderGuidedTab(); document.getElementById('guidedFilter')?.focus(); } });
+  // a screenshot's description is saved when the person leaves the box
+  body.addEventListener('focusout', async e => {
+    const inp = e.target.closest && e.target.closest('[data-shot-caption]'); if (!inp || !guided) return;
+    const id = inp.dataset.shotCaption, fs = inp.closest('[data-key]');
+    const shot = (guided.drafts[fs.dataset.key].evidence || []).find(s => s.id === id);
+    if (!shot || shot.caption === inp.value.trim()) return;
+    shot.caption = inp.value.trim(); persist();
+    try { await monitorApi().updateEvidence(id, shot.caption); } catch (err) { setStatus(document.getElementById('guidedSaveStatus'), 'The description could not be saved: ' + err.message, 'has-issues'); }
+  });
+  body.addEventListener('input', e => { if (e.target.matches('input[type="number"], textarea')) onField(e, false); });
+  body.addEventListener('click', e => {
+    const b = e.target.closest('[data-action]'); if (!b) return;
+    if (b.dataset.action === 'apply') applyGuided(b.dataset.key);
+    if (b.dataset.action === 'hl-show') hlShow(b.dataset.key);
+    if (b.dataset.action === 'hl-next') hlStep(1);
+    if (b.dataset.action === 'hl-prev') hlStep(-1);
+    if (b.dataset.action === 'hl-focus') hlFocus();
+    if (b.dataset.action === 'hl-clear' || b.dataset.action === 'hl-clear-all') hlClear();
+    if (b.dataset.action === 'hl-all') hlShowAll();
+    if (b.dataset.action === 'shot') takeShot(b.dataset.key);
+    if (b.dataset.action === 'shot-remove') removeShot(b.dataset.key, b.dataset.id);
+    if (b.dataset.action === 'save') saveGuided();
+    if (b.dataset.action === 'reload') loadGuided();
+  });
+}
+
+async function saveGuided() {
+  if (!guided) return;
+  const { sel, checklist } = guided;
+  const { items, invalid } = UCheckGuided.pendingItems(checklist, guided.drafts, checklist.page.id);
+  invalid.forEach(i => { guided.drafts[i.key].error = i.error; });
+  const set = msg => {
+    renderGuidedTab();
+    setStatus(document.getElementById('guidedSaveStatus'), msg.text, msg.kind);
+    // the page was redrawn, so the Save button that had focus is gone: put focus back on the new one, and announce the result
+    document.querySelector('#guidedBody [data-action="save"]')?.focus();
+    announce(msg.text);
+  };
+  if (!items.length) { set(invalid.length ? { text: `Nothing saved. ${invalid.length} answer${invalid.length === 1 ? ' needs' : 's need'} fixing first, shown on each check.`, kind: 'has-issues' } : { text: 'Everything is already saved.', kind: 'all-clear' }); return; }
+  setStatus(document.getElementById('guidedSaveStatus'), `Saving ${items.length} answer${items.length === 1 ? '' : 's'}…`);
+  try {
+    const out = await monitorApi().postResults(sel.audit.auditId, { roundId: checklist.roundId, results: items });
+    const byId = {};
+    Object.keys(guided.drafts).forEach(k => { byId[guided.drafts[k].clientResultId] = guided.drafts[k]; });
+    out.accepted.forEach(a => { const d = byId[a.clientResultId]; if (d) { d.dirty = false; d.error = ''; d.savedAt = new Date().toISOString(); } });
+    out.rejected.forEach(r => { const d = byId[r.clientResultId]; if (d) d.error = r.message; });
+    await storageSet(guided.key, guided.drafts);
+    const problems = out.rejected.length + invalid.length;
+    set({ text: `Saved ${out.accepted.length} answer${out.accepted.length === 1 ? '' : 's'}.${problems ? ` ${problems} could not be saved, shown on each check.` : ''}`, kind: problems ? 'has-issues' : 'all-clear' });
+  } catch (err) {
+    if (err.status === 401) disconnectFromMonitor();
+    await storageSet(guided.key, guided.drafts);
+    set({ text: (err.message || 'Could not save.') + ' Your answers are kept on this computer. Try again.', kind: 'has-issues' });
+  }
+}
+
+function sendVerdictsToMonitor() {
+  return monitorSend('VPAT Matrix verdicts', async sel => {
+    const batch = UMonitorClient.buildVerdictBatch(vpatVerdicts, 'wcag22');
+    const out = await monitorApi().postVerdicts(sel.audit.auditId, batch);
+    const rejected = out.rejected.length ? ` ${out.rejected.length} not accepted: ${out.rejected.map(r => r.criterionId).join(', ')}.` : '';
+    return `Sent ${out.accepted.length} of ${batch.verdicts.length} verdicts.${rejected}`;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1653,118 +2025,83 @@ async function toggleAriaInspector() {
 
 const WCAG_2_2_CRITERIA = [
   // Level A
-  { sc:'1.1.1', name:'Non-text Content',                      level:'A',  axeRules:['image-alt','input-image-alt','area-alt','object-alt','role-img-alt','svg-img-alt'],          manualRequired:true,
-    testMethod: 'Use the Images tool to list every image’s alt text. Confirm meaningful images have alt text that conveys their purpose; decorative images have alt="" or are hidden from assistive tech; complex images (charts, infographics) have a nearby or linked long description.', tool: 'imageAlt' },
-  { sc:'1.2.1', name:'Audio-only & Video-only (Prerecorded)', level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'For any audio-only file, confirm a text transcript is provided nearby. For any video-only (silent) file, confirm a text or audio description alternative conveys the same information.', tool: null },
-  { sc:'1.2.2', name:'Captions (Prerecorded)',                level:'A',  axeRules:['video-caption'],                                                                               manualRequired:true,
-    testMethod: 'Play every prerecorded video with sound on and confirm synchronized captions are available and accurate (auto-generated captions alone are usually not accurate enough).', tool: null },
-  { sc:'1.2.3', name:'Audio Description or Media Alt',        level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Play prerecorded video and confirm important visual information not conveyed by the existing audio (on-screen text, silent actions) is available via audio description or a full text alternative.', tool: null },
-  { sc:'1.3.1', name:'Info and Relationships',                level:'A',  axeRules:['definition-list','dlitem','list','listitem','label','aria-required-children','aria-required-parent','empty-heading','table-fake-caption','td-has-header','th-has-data-cells','scope-attr-valid','heading-order'], manualRequired:true,
-    testMethod: 'Use the Headings and Landmarks tools to confirm structure is built with real semantic markup (headings, lists, tables with headers) rather than visual styling alone — e.g. a bolded line of text isn’t a substitute for a real heading tag.', tool: 'headings' },
-  { sc:'1.3.2', name:'Meaningful Sequence',                   level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Disable CSS (or use a screen reader) and confirm content still reads in a logical order that matches the visual layout.', tool: null },
-  { sc:'1.3.3', name:'Sensory Characteristics',               level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Check that instructions never rely solely on shape, color, size, or position (e.g. "click the round button" or "see the box on the right") without another identifier like a visible label.', tool: null },
-  { sc:'1.4.1', name:'Use of Color',                          level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Confirm color is never the only way information is conveyed (required fields, links within body text, error states, chart legend) — there should also be text, an icon, or an underline.', tool: null },
-  { sc:'1.4.2', name:'Audio Control',                         level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'If any audio plays automatically for more than 3 seconds, confirm a visible control lets the user pause, stop, or mute it independent of the system volume.', tool: null },
-  { sc:'2.1.1', name:'Keyboard',                              level:'A',  axeRules:['scrollable-region-focusable','role-application-review'],                                        manualRequired:true,
-    testMethod: 'Unplug your mouse. Confirm every interactive element (links, buttons, form fields, custom widgets, menus) can be operated using only Tab, Shift+Tab, Enter, Space, and arrow keys. If role="application" was flagged, confirm that region truly implements its own full keyboard interaction — it disables normal screen reader arrow-key reading for everything inside it.', tool: 'tabOrder' },
-  { sc:'2.1.2', name:'No Keyboard Trap',                      level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'While tabbing through the page, confirm focus never gets stuck inside a component (modal, embedded widget, date picker) with no way to Tab or Esc back out.', tool: 'tabOrder' },
-  { sc:'2.1.4', name:'Character Key Shortcuts',               level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'If the page defines single-key shortcuts (no Ctrl/Alt/Cmd), confirm they can be turned off, remapped, or only activate on focus — otherwise they can misfire for speech-input or single-switch users.', tool: null },
-  { sc:'2.2.1', name:'Timing Adjustable',                     level:'A',  axeRules:['meta-refresh'],                                                                               manualRequired:true,
-    testMethod: 'If any time limit exists (session timeout, auto-advancing carousel, timed quiz), confirm the user can turn it off, adjust it, or extend it before it expires.', tool: null },
-  { sc:'2.2.2', name:'Pause, Stop, Hide',                     level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'For any moving, blinking, scrolling, or auto-updating content lasting more than 5 seconds, confirm a control lets the user pause, stop, or hide it.', tool: null },
-  { sc:'2.3.1', name:'Three Flashes or Below Threshold',      level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Watch for flashing content and confirm nothing flashes more than 3 times per second, or that the flashing area is small enough to be within the safe threshold.', tool: null },
-  { sc:'2.4.1', name:'Bypass Blocks',                         level:'A',  axeRules:['bypass','landmark-one-main'],                                                                  manualRequired:true,
-    testMethod: 'Confirm a "Skip to main content" link (or properly marked-up landmark regions) lets keyboard users bypass repeated navigation and jump straight to page content. Use the Landmarks tool to verify a main region exists.', tool: 'landmarks' },
-  { sc:'2.4.2', name:'Page Titled',                           level:'A',  axeRules:['document-title'],                                                                             manualRequired:false,
-    testMethod: 'Check the browser tab title — confirm it describes this specific page’s topic or purpose, not just the site name repeated on every page.', tool: null },
-  { sc:'2.4.3', name:'Focus Order',                           level:'A',  axeRules:['focus-order-semantics'],                                                                      manualRequired:true,
-    testMethod: 'Use the Tab Order tool to see the visual sequence, then tab through the page yourself and confirm the order matches a logical reading order and never jumps unpredictably.', tool: 'tabOrder' },
-  { sc:'2.4.4', name:'Link Purpose (In Context)',             level:'A',  axeRules:['link-name','link-in-text-block'],                                                             manualRequired:true,
-    testMethod: 'Read each link’s text (plus its surrounding sentence) out of context and confirm you can tell where it goes without needing generic text like "click here" or "read more" alone.', tool: null },
-  { sc:'2.5.1', name:'Pointer Gestures',                      level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'For any multi-point or path-based gesture (pinch-zoom, swipe), confirm the same function is also available via a single tap or click.', tool: null },
-  { sc:'2.5.2', name:'Pointer Cancellation',                  level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Confirm actions trigger on mouse-up/touch-release (not mouse-down/touch-start), and that moving the pointer off the element before releasing cancels the action.', tool: null },
-  { sc:'2.5.3', name:'Label in Name',                         level:'A',  axeRules:['label-content-name-mismatch'],                                                                manualRequired:true,
-    testMethod: 'Use the ARIA Inspector to compare each control’s visible label to its accessible name — the visible text must be included in the accessible name so voice-control users can say what they see.', tool: 'aria' },
-  { sc:'2.5.4', name:'Motion Actuation',                      level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'If any function is triggered by shaking or tilting the device, confirm it can also be operated by a standard control and that motion-triggering can be disabled.', tool: null },
-  { sc:'3.1.1', name:'Language of Page',                      level:'A',  axeRules:['html-has-lang','html-lang-valid','html-xml-lang-mismatch'],                                   manualRequired:false,
-    testMethod: 'Check the page’s html lang attribute matches the page’s actual language (already flagged automatically if missing or invalid).', tool: null },
-  { sc:'3.2.1', name:'On Focus',                              level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Tab through every element and confirm simply receiving focus never triggers an unexpected change of context (new window, form auto-submit, focus jumping elsewhere).', tool: 'tabOrder' },
-  { sc:'3.2.2', name:'On Input',                              level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Change the value of every form field/select and confirm it never auto-submits the form or changes context without warning — a warning should appear first, or the change should require a separate submit action.', tool: null },
-  { sc:'3.3.1', name:'Error Identification',                  level:'A',  axeRules:['aria-invalid-value'],                                                                         manualRequired:true,
-    testMethod: 'Submit a form with invalid or missing data and confirm errors are identified in text (not color alone) and specifically describe which field is wrong.', tool: 'aria' },
-  { sc:'3.3.2', name:'Labels or Instructions',                level:'A',  axeRules:['label'],                                                                                      manualRequired:true,
-    testMethod: 'Confirm every form field has a visible label or clear instructions describing what input is expected, especially any required format (e.g. date, phone number).', tool: null },
-  { sc:'3.3.7', name:'Redundant Entry',                       level:'A',  axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'In multi-step processes, confirm information the user already entered earlier is auto-populated or re-selectable rather than requiring manual re-entry.', tool: null },
-  { sc:'4.1.2', name:'Name, Role, Value',                     level:'A',  axeRules:['button-name','frame-title','input-button-name','link-name','select-name','aria-allowed-attr','aria-allowed-role','aria-command-name','aria-input-field-name','aria-required-attr','aria-roles','aria-toggle-field-name','aria-valid-attr','aria-valid-attr-value','aria-hidden-focus','duplicate-id-aria'], manualRequired:true,
-    testMethod: 'Use the ARIA Inspector to confirm every custom widget (not a native HTML control) exposes a correct role, name, and state (expanded/checked/pressed/etc.) so assistive tech can identify and operate it.', tool: 'aria' },
+  { sc:'1.1.1', name:'Non-text Content',                      level:'A',  axeRules:['image-alt','input-image-alt','area-alt','object-alt','role-img-alt','svg-img-alt'],          manualRequired:true },
+  { sc:'1.2.1', name:'Audio-only and Video-only (Prerecorded)', level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'1.2.2', name:'Captions (Prerecorded)',                level:'A',  axeRules:['video-caption'],                                                                               manualRequired:true },
+  { sc:'1.2.3', name:'Audio Description or Media Alternative (Prerecorded)', level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'1.3.1', name:'Info and Relationships',                level:'A',  axeRules:['definition-list','dlitem','list','listitem','label','aria-required-children','aria-required-parent','empty-heading','table-fake-caption','td-has-header','th-has-data-cells','scope-attr-valid','heading-order'], manualRequired:true },
+  { sc:'1.3.2', name:'Meaningful Sequence',                   level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'1.3.3', name:'Sensory Characteristics',               level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'1.4.1', name:'Use of Color',                          level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'1.4.2', name:'Audio Control',                         level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'2.1.1', name:'Keyboard',                              level:'A',  axeRules:['scrollable-region-focusable'],                                                                manualRequired:true },
+  { sc:'2.1.2', name:'No Keyboard Trap',                      level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'2.1.4', name:'Character Key Shortcuts',               level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'2.2.1', name:'Timing Adjustable',                     level:'A',  axeRules:['meta-refresh'],                                                                               manualRequired:true },
+  { sc:'2.2.2', name:'Pause, Stop, Hide',                     level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'2.3.1', name:'Three Flashes or Below Threshold',      level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'2.4.1', name:'Bypass Blocks',                         level:'A',  axeRules:['bypass','landmark-one-main'],                                                                  manualRequired:true },
+  { sc:'2.4.2', name:'Page Titled',                           level:'A',  axeRules:['document-title'],                                                                             manualRequired:false },
+  { sc:'2.4.3', name:'Focus Order',                           level:'A',  axeRules:['focus-order-semantics'],                                                                      manualRequired:true },
+  { sc:'2.4.4', name:'Link Purpose (In Context)',             level:'A',  axeRules:['link-name','link-in-text-block'],                                                             manualRequired:true },
+  { sc:'2.5.1', name:'Pointer Gestures',                      level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'2.5.2', name:'Pointer Cancellation',                  level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'2.5.3', name:'Label in Name',                         level:'A',  axeRules:['label-content-name-mismatch'],                                                                manualRequired:true },
+  { sc:'2.5.4', name:'Motion Actuation',                      level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'3.1.1', name:'Language of Page',                      level:'A',  axeRules:['html-has-lang','html-lang-valid','html-xml-lang-mismatch'],                                   manualRequired:false },
+  { sc:'3.2.1', name:'On Focus',                              level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'3.2.2', name:'On Input',                              level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'3.2.6', name:'Consistent Help',                       level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'3.3.1', name:'Error Identification',                  level:'A',  axeRules:['aria-invalid-value'],                                                                         manualRequired:true },
+  { sc:'3.3.2', name:'Labels or Instructions',                level:'A',  axeRules:['label'],                                                                                      manualRequired:true },
+  { sc:'3.3.7', name:'Redundant Entry',                       level:'A',  axeRules:[],                                                                                             manualRequired:true },
+  { sc:'4.1.2', name:'Name, Role, Value',                     level:'A',  axeRules:['button-name','frame-title','input-button-name','link-name','select-name','aria-allowed-attr','aria-allowed-role','aria-command-name','aria-input-field-name','aria-required-attr','aria-roles','aria-toggle-field-name','aria-valid-attr','aria-valid-attr-value','aria-hidden-focus','duplicate-id-aria'], manualRequired:true },
   // Level AA
-  { sc:'1.2.4', name:'Captions (Live)',                       level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'For any live audio/video content, confirm real-time captions are provided.', tool: null },
-  { sc:'1.2.5', name:'Audio Description (Prerecorded)',       level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Play prerecorded video and confirm audio description is available for important visual information not already covered by the existing dialogue/audio track.', tool: null },
-  { sc:'1.3.4', name:'Orientation',                           level:'AA', axeRules:['css-orientation-lock'],                                                                       manualRequired:true,
-    testMethod: 'Rotate the device/viewport between portrait and landscape and confirm content and functionality both work in either orientation, unless a specific orientation is essential (e.g. a piano app).', tool: null },
-  { sc:'1.3.5', name:'Identify Input Purpose',                level:'AA', axeRules:['autocomplete-valid'],                                                                         manualRequired:true,
-    testMethod: 'Check common input fields (name, email, address, etc.) use the correct autocomplete attribute so browsers/assistive tech can auto-fill and identify their purpose.', tool: null },
-  { sc:'1.4.3', name:'Contrast (Minimum)',                    level:'AA', axeRules:['color-contrast'],                                                                             manualRequired:true,
-    testMethod: 'Use the Color Contrast tool to check text against its background — normal text needs 4.5:1, large text (18pt+, or 14pt+ bold) needs 3:1.', tool: 'contrast' },
-  { sc:'1.4.4', name:'Resize Text',                           level:'AA', axeRules:['meta-viewport'],                                                                              manualRequired:true,
-    testMethod: 'Zoom the browser to 200% and confirm all text remains readable with no content or functionality lost, and no horizontal scrolling required for body text.', tool: null },
-  { sc:'1.4.5', name:'Images of Text',                        level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Confirm text is rendered as real text, not as an image of text, except for logos or where a specific visual presentation is essential.', tool: null },
-  { sc:'1.4.10', name:'Reflow',                               level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Zoom to 400% (or set the viewport to 320px wide) and confirm content reflows to a single column with no loss of information and no two-dimensional scrolling, except for content that inherently needs it (data tables, maps).', tool: null },
-  { sc:'1.4.11', name:'Non-text Contrast',                    level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Use the Color Contrast tool on UI components (button borders, form field borders, focus indicators) and graphical icons that convey meaning — they need 3:1 contrast against adjacent colors.', tool: 'contrast' },
-  { sc:'1.4.12', name:'Text Spacing',                         level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Apply increased line height (1.5x), paragraph spacing (2x), letter spacing (0.12x), and word spacing (0.16x) via a bookmarklet/extension and confirm no text is clipped or overlapping.', tool: null },
-  { sc:'1.4.13', name:'Content on Hover or Focus',            level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Trigger any tooltip/popover via hover or focus and confirm it can be dismissed without moving the pointer (e.g. Esc key), stays visible while the pointer moves onto it, and remains visible until dismissed or no longer relevant.', tool: null },
-  { sc:'2.4.5', name:'Multiple Ways',                         level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Confirm there are at least two ways to find any given page (e.g. navigation menu + search, or sitemap + breadcrumbs) — not required on pages that are themselves a step in a process.', tool: 'navs' },
-  { sc:'2.4.6', name:'Headings and Labels',                   level:'AA', axeRules:['empty-heading','page-has-heading-one'],                                                        manualRequired:true,
-    testMethod: 'Use the Headings tool to confirm headings and form labels describe their topic or purpose clearly enough to navigate by, especially for screen reader users jumping heading-to-heading.', tool: 'headings' },
-  { sc:'2.4.7', name:'Focus Visible',                         level:'AA', axeRules:['focus-visible'],                                                                              manualRequired:true,
-    testMethod: 'Use the Check Focus Indicators tool to Tab through every interactive element and confirm a visible focus indicator appears on each one — nothing should suppress the outline with no visible replacement. No screen reader test can verify this; JAWS and NVDA both announce "focused" whether or not anything is visible.', tool: 'focus' },
-  { sc:'2.4.11', name:'Focus Not Obscured (Minimum)',         level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Tab to each focusable element on pages with sticky headers, footers, or cookie banners, and confirm the focused element is never entirely hidden behind that other content — at least some part of it must remain visible.', tool: null },
-  { sc:'2.5.7', name:'Dragging Movements',                    level:'AA', axeRules:['drag-interaction-review'],                                                                    manualRequired:true,
-    testMethod: 'For any drag-and-drop interaction (reordering, sliders), confirm the same function is also available via a single click/tap, e.g. up/down buttons as an alternative to dragging. Screen readers only ever narrate drag state — they never perform the drag or supply this alternative for you.', tool: null },
-  { sc:'2.5.8', name:'Target Size (Minimum)',                 level:'AA', axeRules:['target-size'],                                                                                manualRequired:true,
-    testMethod: 'Measure clickable targets (buttons, links, icons) — each needs at least 24×24 CSS pixels, or sufficient spacing from adjacent targets, unless inline in a sentence or a native browser control.', tool: null },
-  { sc:'3.1.2', name:'Language of Parts',                     level:'AA', axeRules:['valid-lang'],                                                                                 manualRequired:true,
-    testMethod: 'Check any passage in a different language from the page’s main language has its own lang attribute (e.g. a French quote on an English page).', tool: null },
-  { sc:'3.2.3', name:'Consistent Navigation',                 level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Use the Nav & Menus tool to compare the main navigation across multiple pages and confirm repeated navigation components appear in the same relative order each time.', tool: 'navs' },
-  { sc:'3.2.4', name:'Consistent Identification',             level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Compare components with the same function across the site (e.g. a "Search" icon) and confirm they’re labeled/identified consistently everywhere.', tool: null },
-  { sc:'3.2.6', name:'Consistent Help',                       level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'If the site offers help mechanisms (contact info, chat, FAQ link), confirm they appear in the same relative order on every page that has one.', tool: null },
-  { sc:'3.3.3', name:'Error Suggestion',                      level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Trigger a form validation error and confirm the message suggests how to fix it (not just that it’s wrong), unless doing so would compromise security (e.g. login failures).', tool: null },
-  { sc:'3.3.4', name:'Error Prevention (Legal, Financial)',   level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'For any submission with legal/financial consequences or that modifies/deletes user data, confirm the user can review, correct, and confirm before final submission, or can reverse/undo afterward.', tool: null },
-  { sc:'3.3.8', name:'Accessible Authentication (Minimum)',   level:'AA', axeRules:[],                                                                                             manualRequired:true,
-    testMethod: 'Check that login/authentication doesn’t require a cognitive function test (remembering a password, solving a puzzle) unless an alternative exists — e.g. pasting a password isn’t blocked, or a passkey/biometric option is offered.', tool: null },
-  { sc:'4.1.3', name:'Status Messages',                       level:'AA', axeRules:['aria-live-region-item'],                                                                      manualRequired:true,
-    testMethod: 'Use Watch Live Regions, trigger a status update that doesn’t move focus (e.g. "item added to cart", a save confirmation, a search result count), then press Refresh Log to confirm it was actually announced. A region that already contains text when the page loads — rather than starting empty and having content injected afterward — will not announce anything to a real screen reader even with aria-live present.', tool: 'liveRegions' },
+  { sc:'1.2.4', name:'Captions (Live)',                       level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'1.2.5', name:'Audio Description (Prerecorded)',       level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'1.3.4', name:'Orientation',                           level:'AA', axeRules:['css-orientation-lock'],                                                                       manualRequired:true },
+  { sc:'1.3.5', name:'Identify Input Purpose',                level:'AA', axeRules:['autocomplete-valid'],                                                                         manualRequired:true },
+  { sc:'1.4.3', name:'Contrast (Minimum)',                    level:'AA', axeRules:['color-contrast'],                                                                             manualRequired:true },
+  { sc:'1.4.4', name:'Resize Text',                           level:'AA', axeRules:['meta-viewport'],                                                                              manualRequired:true },
+  { sc:'1.4.5', name:'Images of Text',                        level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'1.4.10', name:'Reflow',                               level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'1.4.11', name:'Non-text Contrast',                    level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'1.4.12', name:'Text Spacing',                         level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'1.4.13', name:'Content on Hover or Focus',            level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'2.4.5', name:'Multiple Ways',                         level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'2.4.6', name:'Headings and Labels',                   level:'AA', axeRules:['empty-heading','page-has-heading-one'],                                                        manualRequired:true },
+  { sc:'2.4.7', name:'Focus Visible',                         level:'AA', axeRules:['focus-visible'],                                                                              manualRequired:true },
+  { sc:'2.4.11', name:'Focus Not Obscured (Minimum)',            level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'2.5.7', name:'Dragging Movements',                    level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'2.5.8', name:'Target Size (Minimum)',                 level:'AA', axeRules:['target-size'],                                                                                manualRequired:true },
+  { sc:'3.1.2', name:'Language of Parts',                     level:'AA', axeRules:['valid-lang'],                                                                                 manualRequired:true },
+  { sc:'3.2.3', name:'Consistent Navigation',                 level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'3.2.4', name:'Consistent Identification',             level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'3.3.3', name:'Error Suggestion',                      level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'3.3.4', name:'Error Prevention (Legal, Financial, Data)', level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'3.3.8', name:'Accessible Authentication (Minimum)',   level:'AA', axeRules:[],                                                                                             manualRequired:true },
+  { sc:'4.1.3', name:'Status Messages',                       level:'AA', axeRules:['aria-live-region-item'],                                                                      manualRequired:true },
 ];
+
+// W3C reference links, derived from the (corrected) criterion names.
+// How to Meet = Quick Reference; Understanding = the SC's Understanding doc.
+const wcagSlug = n => n.toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-');
+WCAG_2_2_CRITERIA.forEach(c => {
+  const slug = wcagSlug(c.name);
+  c.quickrefUrl      = `https://www.w3.org/WAI/WCAG22/quickref/#${slug}`;
+  c.understandingUrl = `https://www.w3.org/WAI/WCAG22/Understanding/${slug}.html`;
+});
+
+// Conformance states. Per ITI VPAT 2.5, "Not Evaluated" is valid ONLY for
+// WCAG Level AAA. An untested A/AA criterion is "Testing Pending": it is
+// allowed in a draft and blocks the report from being marked complete.
+const STATUS_PENDING       = 'Testing Pending';
+const STATUS_NOT_EVALUATED = 'Not Evaluated';
+const defaultConformance   = level => level === 'AAA' ? STATUS_NOT_EVALUATED : STATUS_PENDING;
+
+// Versions shown in exported reports (axe-core is bundled in axe.min.js)
+const AXE_VERSION = '4.8.4';
+const EXT_VERSION = chrome.runtime.getManifest().version;
 
 // ---------------------------------------------------------------------------
 // VPAT Product Info Form
@@ -1823,48 +2160,33 @@ function renderVpatProductForm() {
 }
 
 // ---------------------------------------------------------------------------
-// Jump from a VPAT Matrix row straight into the matching Audit Tools feature
-// ---------------------------------------------------------------------------
-
-// Maps a criterion's `tool` key to the toggle function that turns it on,
-// and to the toolbar button whose aria-pressed state tells us if it's
-// already active (so we don't accidentally switch it back off).
-const TOOL_ACTIVATORS = {
-  tabOrder:  { btnId: 'tabOrderBtn',  activate: toggleTabOrder },
-  headings:  { btnId: 'headingsBtn',  activate: toggleHeadings },
-  imageAlt:  { btnId: 'imageAltBtn',  activate: toggleImageAlt },
-  landmarks: { btnId: 'landmarksBtn', activate: () => toggleTool('landmarks') },
-  lists:     { btnId: 'listsBtn',     activate: () => toggleTool('lists') },
-  icons:     { btnId: 'iconsBtn',     activate: () => toggleTool('icons') },
-  navs:      { btnId: 'navsBtn',      activate: () => toggleTool('navs') },
-  contrast:  { btnId: 'contrastBtn',  activate: toggleContrast },
-  aria:      { btnId: 'ariaBtn',      activate: toggleAriaInspector },
-  focus:       { btnId: 'focusBtn',      activate: () => toggleTool('focus') },
-  liveRegions: { btnId: 'liveRegionBtn', activate: toggleLiveRegions },
-};
-
-async function activateTool(toolKey) {
-  const entry = TOOL_ACTIVATORS[toolKey];
-  if (!entry) return;
-
-  switchTab('tools');
-
-  const btn = document.getElementById(entry.btnId);
-  const alreadyActive = btn?.getAttribute('aria-pressed') === 'true';
-  if (!alreadyActive) await entry.activate();
-
-  btn?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  btn?.focus();
-}
-
-// ---------------------------------------------------------------------------
 // VPAT Readiness Matrix
 // ---------------------------------------------------------------------------
 
+// Per-criterion element counts from the scan (see criterion-counts.js). Computed once per scan and kept
+// on the results, so the matrix, exports and Ü Monitor all use the same numbers.
+function getCriterionCounts() {
+  if (!currentResults) return {};
+  if (!currentResults.criteriaCounts) {
+    const rules = Object.fromEntries(WCAG_2_2_CRITERIA.filter(c => c.axeRules && c.axeRules.length).map(c => [c.sc, c.axeRules]));
+    currentResults.criteriaCounts = UCheckCriterionCounts.computeCriterionCounts(currentResults, rules);
+  }
+  return currentResults.criteriaCounts;
+}
+
+// Suggestion drawn from automated counts only. It never says "Supports": automation cannot confirm that.
+function suggestFromCounts(c) {
+  if (!c || !c.applicable) return '';
+  if (c.unresolved > 0) return `${c.unresolved} still need review before a level can be suggested.`;
+  if (c.fail === 0) return 'No automated failures. Manual checks are still needed.';
+  const s = UCheckConformance.suggestConformance({ pass: c.pass, fail: c.fail });
+  return s.suggestion ? `Suggested from these counts: ${s.suggestion}.` : '';
+}
+
 function buildVpatMatrix() {
   if (!currentResults) return WCAG_2_2_CRITERIA.map(c => ({
-    ...c, automatedEvidence: 'None', passRate: null,
-    autoConformance: 'Not Evaluated', conformanceLevel: 'Not Evaluated',
+    ...c, automatedEvidence: 'None', autoHint: '',
+    conformanceLevel: defaultConformance(c.level),
     readiness: 'Not Evaluated', inlineConformance: null, remark: ''
   }));
 
@@ -1885,7 +2207,6 @@ function buildVpatMatrix() {
       if (passMap[ruleId])      totalPass += (passMap[ruleId].nodes      || []).length;
     });
     const totalNodes = totalPass + totalFail;
-    const passRate   = totalNodes > 0 ? totalPass / totalNodes : null;
 
     // ── Old-style automated evidence signal (kept for readiness coloring) ──
     let automatedEvidence = 'None';
@@ -1893,17 +2214,21 @@ function buildVpatMatrix() {
     else if (rules.some(r => incompleteIds.has(r))) automatedEvidence = 'Partial';
     else if (rules.some(r => passMap[r]))         automatedEvidence = 'Pass';
 
-    // ── Auto-calculate VPAT conformance level from node pass rate ──────────
-    // >99% pass → Supports; 65–99% → Partially Supports; ≤65% → Does Not Support
-    let autoConformance = 'Not Evaluated';
-    if (passRate !== null) {
-      if      (passRate >= 0.99)  autoConformance = 'Supports';
-      else if (passRate  > 0.65)  autoConformance = 'Partially Supports';
-      else                        autoConformance = 'Does Not Support';
+    // ── Automated results are EVIDENCE ONLY ────────────────────────────────
+    // They never set a conformance level: axe cannot verify most of what a
+    // criterion requires. A tester must record the verdict. The element counts
+    // (how many elements were checked, how many pass) are what the tester needs
+    // to choose between Supports, Partially Supports and Does Not Support.
+    const counts = getCriterionCounts()[criterion.sc] || null;
+    let autoHint = '';
+    if (counts && counts.applicable) {
+      autoHint = `Automated: ${UCheckCriterionCounts.describeCounts(counts)}. ${suggestFromCounts(counts)}`;
+    } else if (totalFail > 0) {
+      autoHint = `Automated: ${totalFail} failing node${totalFail === 1 ? '' : 's'} found. Confirm, then record a verdict.`;
     } else if (automatedEvidence === 'Partial') {
-      autoConformance = 'Partially Supports';
-    } else if (automatedEvidence === 'Fail') {
-      autoConformance = 'Does Not Support';
+      autoHint = 'Automated: inconclusive. Manual review needed.';
+    } else if (automatedEvidence === 'Pass') {
+      autoHint = `Automated: ${totalPass} node${totalPass === 1 ? '' : 's'} passed. Manual verification still required.`;
     }
 
     // ── Manual review verdicts from the Needs Review workflow ──────────────
@@ -1922,7 +2247,7 @@ function buildVpatMatrix() {
     const remark            = inlineData ? (inlineData.remark || '') : '';
 
     // User override takes precedence over auto-calculated
-    const conformanceLevel = inlineConformance || autoConformance;
+    const conformanceLevel = inlineConformance || defaultConformance(criterion.level);
 
     // ── Readiness label (used for row background color) ────────────────────
     let readiness;
@@ -1938,7 +2263,7 @@ function buildVpatMatrix() {
       readiness = 'Not Evaluated';
     }
 
-    return { ...criterion, automatedEvidence, passRate, autoConformance,
+    return { ...criterion, automatedEvidence, autoHint, counts,
              conformanceLevel, readiness, testerVerdict, inlineConformance, remark };
   });
 }
@@ -1956,7 +2281,8 @@ function renderVpatMatrix() {
     'Does Not Support':   matrix.filter(r => r.conformanceLevel === 'Does Not Support').length,
     'Not Applicable':     matrix.filter(r => r.conformanceLevel === 'Not Applicable').length,
     'Needs Review':       matrix.filter(r => r.readiness === 'Needs Manual Verification' && !r.inlineConformance).length,
-    'Not Evaluated':      matrix.filter(r => r.conformanceLevel === 'Not Evaluated').length,
+    'Testing Pending':    matrix.filter(r => r.conformanceLevel === STATUS_PENDING).length,
+    'Not Evaluated':      matrix.filter(r => r.conformanceLevel === STATUS_NOT_EVALUATED).length,
   };
 
   // ── Conformance level button definitions ─────────────────────────────────
@@ -1987,8 +2313,8 @@ function renderVpatMatrix() {
     }).join('');
 
     // Show auto-calculated hint when no manual verdict is recorded
-    const autoHint = !hasVerdict && r.autoConformance !== 'Not Evaluated'
-      ? `<div class="vpat-auto-hint">Auto: ${escapeHtml(r.autoConformance)}</div>`
+    const autoHint = !hasVerdict && r.autoHint
+      ? `<div class="vpat-auto-hint">${escapeHtml(r.autoHint)}</div>`
       : '';
 
     // Remark textarea appears only once a conformance level is set
@@ -2024,7 +2350,8 @@ function renderVpatMatrix() {
       <span class="vpat-key vpat-key-fail">✗ Does Not Support (${cCounts['Does Not Support']})</span>
       <span class="vpat-key vpat-key-na">— Not Applicable (${cCounts['Not Applicable']})</span>
       <span class="vpat-key manual">⚑ Needs Manual (${cCounts['Needs Review']})</span>
-      <span class="vpat-key noevals">○ Not Evaluated (${cCounts['Not Evaluated']})</span>
+      <span class="vpat-key noevals">○ Testing Pending (${cCounts['Testing Pending']})</span>
+      ${cCounts['Not Evaluated'] ? `<span class="vpat-key noevals">○ Not Evaluated, AAA (${cCounts['Not Evaluated']})</span>` : ''}
     </div>
     <div style="overflow-x:auto;max-height:380px;overflow-y:auto">
       <table class="vpat-table">
@@ -2035,23 +2362,23 @@ function renderVpatMatrix() {
           ${matrix.map(r => `
             <tr class="${rowClass(r)}">
               <td><strong>${r.sc}</strong></td>
-              <td>
-                ${escapeHtml(r.name)}
-                <details class="vpat-howto">
-                  <summary>How to test</summary>
-                  <p>${escapeHtml(r.testMethod || 'No specific test method recorded yet — use judgment based on the criterion description.')}</p>
-                  ${r.tool ? `<button type="button" class="vpat-test-btn" data-action="vpat-activate-tool" data-tool="${r.tool}">Test this in Audit Tools →</button>` : ''}
-                </details>
-              </td>
+              <td>${escapeHtml(r.name)}
+                <div class="vpat-links">
+                  <a href="${r.quickrefUrl}" target="_blank" rel="noopener noreferrer"
+                     aria-label="How to Meet ${r.sc} ${escapeHtml(r.name)} (opens in new tab)">How to Meet</a>
+                  <span aria-hidden="true">·</span>
+                  <a href="${r.understandingUrl}" target="_blank" rel="noopener noreferrer"
+                     aria-label="Understanding ${r.sc} ${escapeHtml(r.name)} (opens in new tab)">Understanding</a>
+                </div></td>
               <td>${r.level}</td>
-              <td>${r.automatedEvidence}</td>
+              <td>${r.automatedEvidence}${r.counts && r.counts.applicable ? `<div class="vpat-counts">${escapeHtml(UCheckCriterionCounts.describeCounts(r.counts))}</div>` : ''}</td>
               <td class="vpat-readiness-cell">${renderConformanceCell(r)}</td>
             </tr>
           `).join('')}
         </tbody>
       </table>
     </div>
-    <p class="vpat-disclaimer">Select a conformance level on any row to record your assessment and add required remarks. Remarks are required for every criterion included in a formal VPAT.</p>
+    <p class="vpat-disclaimer">Select a conformance level on any row to record your assessment and add required remarks. Remarks are required for every criterion included in a formal VPAT. Automated results are evidence only: a criterion stays &quot;Testing Pending&quot; until a tester records a verdict.</p>
   `;
 
   // ── Event listeners — attached once to avoid stacking on re-renders ──────
@@ -2060,9 +2387,6 @@ function renderVpatMatrix() {
 
     // Verdict button clicks
     panel.addEventListener('click', e => {
-      const toolBtn = e.target.closest('[data-action="vpat-activate-tool"]');
-      if (toolBtn) { activateTool(toolBtn.dataset.tool); return; }
-
       const btn = e.target.closest('[data-action="vpat-verdict"]');
       if (!btn) return;
       const sc = btn.dataset.sc;
@@ -2090,9 +2414,11 @@ function renderVpatMatrix() {
 function exportVpatCSV() {
   const matrix = buildVpatMatrix();
   // Column names mirror the VPAT 2.x ACR template format
-  const headers = ['SC', 'Criterion', 'Level', 'Automated Evidence', 'Conformance Level', 'Remarks and Explanations'];
+  const headers = ['SC', 'Criterion', 'Level', 'Automated Evidence', 'Elements checked (automated)', 'Elements passing', 'Elements failing', 'Elements needing review', 'Conformance Level', 'Remarks and Explanations', 'W3C How to Meet'];
   const rows = [headers, ...matrix.map(r => [
-    r.sc, r.name, r.level, r.automatedEvidence, r.conformanceLevel, r.remark || ''
+    r.sc, r.name, r.level, r.automatedEvidence,
+    r.counts ? r.counts.applicable : '', r.counts ? r.counts.pass : '', r.counts ? r.counts.fail : '', r.counts ? r.counts.unresolved : '',
+    r.conformanceLevel, r.remark || '', r.quickrefUrl
   ])];
   const csv = rows.map(row => row.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\r\n');
   download(csv, `vpat-readiness-matrix-${dateStamp()}.csv`, 'text/csv');
@@ -2122,8 +2448,8 @@ function exportAcrHtml() {
   const notes       = pi.notes        || '';
 
   const evalMethods =
-    `Automated accessibility testing was conducted using axe-core 4.8.4 (Deque Systems) ` +
-    `via the Accessiblü WCAG 2.2 Tester Chrome extension (v1.4.0). ` +
+    `Automated accessibility testing was conducted using axe-core ${AXE_VERSION} (Deque Systems) ` +
+    `via the Ü Check Chrome extension by Accessiblü (v${EXT_VERSION}). ` +
     `Testing was performed on: ${url} on ${date}. ` +
     `Manual testing and expert review were conducted for success criteria requiring human judgment, ` +
     `including keyboard operability, screen reader compatibility, focus management, ` +
@@ -2132,7 +2458,11 @@ function exportAcrHtml() {
   // Count completeness for the cover-page notice
   const withVerdict = matrix.filter(r => r.inlineConformance).length;
   const withRemark  = matrix.filter(r => r.remark && r.remark.trim()).length;
-  const notEval     = matrix.filter(r => r.conformanceLevel === 'Not Evaluated').length;
+  const pending     = matrix.filter(r => r.conformanceLevel === STATUS_PENDING).length;
+  const missingRemarks = matrix.filter(r => r.inlineConformance && !(r.remark && r.remark.trim())).length;
+  // A report is a DRAFT until every A/AA criterion has a verdict and remarks.
+  const isDraft     = pending > 0 || missingRemarks > 0;
+  const draftTag    = isDraft ? ' (DRAFT)' : '';
 
   const rowClass = (r) => ({
     'Supports':           'acr-row-supports',
@@ -2140,20 +2470,19 @@ function exportAcrHtml() {
     'Does Not Support':   'acr-row-fail',
     'Not Applicable':     'acr-row-na',
     'Not Evaluated':      'acr-row-none',
+    'Testing Pending':    'acr-row-none',
   }[r.conformanceLevel] || 'acr-row-none');
 
-  const criteriaLink = (sc) =>
-    `https://www.w3.org/TR/WCAG22/#${sc.replace(/\./g,'')}`;
 
   const renderCriteriaRows = (criteria) => criteria.map(r => `
     <tr class="${rowClass(r)}">
       <td>
-        <a href="${criteriaLink(r.sc)}" target="_blank" rel="noopener noreferrer"
+        <a href="${r.quickrefUrl}" target="_blank" rel="noopener noreferrer"
            style="color:inherit;font-weight:600;text-decoration:none;">${r.sc}</a>
         ${escapeHtml(r.name)} (Level ${r.level})
       </td>
       <td class="acr-conf-cell">${escapeHtml(r.conformanceLevel)}</td>
-      <td class="acr-remark-cell">${r.remark ? escapeHtml(r.remark) : (r.conformanceLevel === 'Not Evaluated' ? '<em style="color:#9ca3af">Not yet evaluated</em>' : '')}</td>
+      <td class="acr-remark-cell">${r.remark ? escapeHtml(r.remark) : (r.conformanceLevel === STATUS_PENDING ? '<em style="color:#6b7280">Testing pending. Not yet evaluated. Draft only.</em>' : '')}</td>
     </tr>`).join('');
 
   const html = `<!DOCTYPE html>
@@ -2161,7 +2490,7 @@ function exportAcrHtml() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Accessibility Conformance Report — ${escapeHtml(productName)}</title>
+<title>Accessibility Conformance Report${draftTag} — ${escapeHtml(productName)}</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Segoe UI', Arial, Helvetica, sans-serif; font-size: 14px;
@@ -2273,12 +2602,12 @@ function exportAcrHtml() {
     <div class="acr-header-top">
       <div>
         <div class="acr-org-name">${escapeHtml(org)}</div>
-        <div class="acr-title">Accessibility Conformance Report</div>
+        <div class="acr-title">Accessibility Conformance Report${draftTag}</div>
         <div class="acr-sub">WCAG Edition &nbsp;·&nbsp; Based on VPAT<sup>®</sup> Version 2.5</div>
       </div>
       <div class="acr-tool-credit">
         <div class="acr-tool-credit-label">Generated with</div>
-        <div class="acr-tool-credit-name">Accessi<span>blü</span> WCAG Check&nbsp;Ü</div>
+        <div class="acr-tool-credit-name">Ü&nbsp;Check by Accessi<span>blü</span></div>
         <div class="acr-tool-credit-sub">Self-service testing tool</div>
       </div>
     </div>
@@ -2289,7 +2618,7 @@ function exportAcrHtml() {
     <strong>Self-Generated Accessibility Conformance Report</strong>
     <p>
       This document was independently prepared by <strong>${escapeHtml(org)}</strong> using the
-      <strong>Accessiblü WCAG Check Ü</strong> browser extension — a self-service accessibility
+      <strong>Ü Check</strong> browser extension — a self-service accessibility
       testing tool. It was not prepared by, reviewed by, or issued by Accessiblü as part of a
       professional accessibility consulting engagement.
     </p>
@@ -2307,13 +2636,14 @@ function exportAcrHtml() {
     </p>
   </div>
 
-  ${notEval > 0 || withVerdict < matrix.length ? `
-  <div class="acr-notice">
-    <strong>Completeness Notice</strong>
-    ${withVerdict} of ${matrix.length} criteria have recorded conformance levels &nbsp;·&nbsp;
+  ${isDraft ? `
+  <div class="acr-notice" role="note">
+    <strong>DRAFT: testing is not complete</strong>
+    ${withVerdict} of ${matrix.length} Level A and AA criteria have recorded conformance levels &nbsp;·&nbsp;
     ${withRemark} of ${matrix.length} have remarks &nbsp;·&nbsp;
-    ${notEval} criteria are still marked "Not Evaluated."
-    Review the VPAT Matrix tab in the extension to complete all entries before distributing this report.
+    ${pending} are marked "Testing Pending" (not yet evaluated).
+    "Testing Pending" is a draft-only status. A final ACR may not use "Not Evaluated" for Level A or AA criteria.
+    Complete every entry in the VPAT Matrix tab before distributing this report as final.
   </div>` : ''}
 
   <!-- ── Product Information ── -->
@@ -2356,7 +2686,9 @@ function exportAcrHtml() {
       <tr><td><strong>Not Applicable</strong></td>
           <td>The criterion is not relevant to the product.</td></tr>
       <tr><td><strong>Not Evaluated</strong></td>
-          <td>The product has not been evaluated against the criterion.</td></tr>
+          <td>The product has not been evaluated against the criterion. This can be used only in WCAG 2.x Level AAA.</td></tr>
+      <tr><td><strong>Testing Pending</strong></td>
+          <td>Draft only. Testing of this Level A or AA criterion has not been completed. This status is not part of the VPAT standard and must be resolved before the report is final.</td></tr>
     </tbody>
   </table>
 
@@ -2397,7 +2729,7 @@ function exportAcrHtml() {
     <strong>Legal Disclaimer</strong>
     <p style="margin-top:8px">
       This Accessibility Conformance Report (ACR) was self-generated by
-      <strong>${escapeHtml(org)}</strong> using the Accessiblü WCAG Check Ü browser extension
+      <strong>${escapeHtml(org)}</strong> using the Ü Check browser extension
       and is provided for informational purposes only. It is not a professional accessibility
       audit, and it was not prepared, reviewed, or endorsed by Accessiblü or any of its
       affiliates as a consulting deliverable.
@@ -2416,15 +2748,15 @@ function exportAcrHtml() {
     </p>
     <p>
       VPAT® is a registered trademark of the Information Technology Industry Council (ITI).
-      This document was produced using the Accessiblü WCAG Check Ü self-service tool and is
+      This document was produced using the Ü Check self-service tool and is
       not affiliated with, endorsed by, or reviewed by ITI.
     </p>
   </div>
 
   <div class="acr-footer">
     Self-generated by <strong>${escapeHtml(org)}</strong> using
-    <a href="https://www.accessiblu.com" target="_blank" rel="noopener noreferrer">Accessiblü WCAG Check Ü</a>
-    &nbsp;·&nbsp; axe-core 4.8.4 &nbsp;·&nbsp; ${escapeHtml(date)}
+    <a href="https://www.accessiblu.com" target="_blank" rel="noopener noreferrer">Ü Check</a>
+    &nbsp;·&nbsp; axe-core ${AXE_VERSION} &nbsp;·&nbsp; ${escapeHtml(date)}
     &nbsp;·&nbsp; This ACR was not prepared by Accessiblü as a professional audit service.
   </div>
 
@@ -2432,7 +2764,7 @@ function exportAcrHtml() {
 </body>
 </html>`;
 
-  download(html, `accessibility-conformance-report-${dateStamp()}.html`, 'text/html');
+  download(html, `accessibility-conformance-report${isDraft ? '-DRAFT' : ''}-${dateStamp()}.html`, 'text/html');
 }
 
 // ---------------------------------------------------------------------------
@@ -2570,7 +2902,7 @@ async function exportHTMLReport() {
     <div class="report-meta">
       <strong>WCAG 2.2 Level ${escapeHtml(level)}</strong>
       ${escapeHtml(date)}<br>
-      axe-core 4.8.4
+      axe-core ${AXE_VERSION}
     </div>
   </header>
 
@@ -2589,13 +2921,13 @@ async function exportHTMLReport() {
     <tr><td style="padding:6px;border:1px solid #e5e7eb;font-weight:600;width:180px">Page Tested</td><td style="padding:6px;border:1px solid #e5e7eb;word-break:break-all">${escapeHtml(url)}</td></tr>
     <tr><td style="padding:6px;border:1px solid #e5e7eb;font-weight:600">Test Date</td><td style="padding:6px;border:1px solid #e5e7eb">${escapeHtml(date)}</td></tr>
     <tr><td style="padding:6px;border:1px solid #e5e7eb;font-weight:600">WCAG Version / Level</td><td style="padding:6px;border:1px solid #e5e7eb">WCAG 2.2 Level ${escapeHtml(level)}</td></tr>
-    <tr><td style="padding:6px;border:1px solid #e5e7eb;font-weight:600">Tool</td><td style="padding:6px;border:1px solid #e5e7eb">Accessiblü WCAG 2.2 Tester · axe-core 4.8.4</td></tr>
+    <tr><td style="padding:6px;border:1px solid #e5e7eb;font-weight:600">Tool</td><td style="padding:6px;border:1px solid #e5e7eb">Ü Check by Accessiblü v${EXT_VERSION} · axe-core ${AXE_VERSION}</td></tr>
     <tr><td style="padding:6px;border:1px solid #e5e7eb;font-weight:600">Overall Risk</td><td style="padding:6px;border:1px solid #e5e7eb"><span class="risk-badge">${risk}</span></td></tr>
   </table>
 
   <!-- Testing Methodology -->
   <h2>Testing Methodology</h2>
-  <p>Automated accessibility testing was conducted using <strong>axe-core 4.8.4</strong> by Deque Systems, the industry-standard open-source accessibility testing engine. Tests were executed via the Accessiblü WCAG 2.2 Tester Chrome extension in a desktop browser environment.</p>
+  <p>Automated accessibility testing was conducted using <strong>axe-core ${AXE_VERSION}</strong> by Deque Systems, the industry-standard open-source accessibility testing engine. Tests were executed via the Ü Check Chrome extension by Accessiblü in a desktop browser environment.</p>
   <p><strong>WCAG version:</strong> WCAG 2.2 · Conformance Level ${escapeHtml(level)}<br>
   <strong>Scope:</strong> Single page — ${escapeHtml(url)}</p>
   <p><strong>Limitations:</strong> Automated testing identifies approximately 30–40% of potential WCAG violations. Criteria requiring human judgment — including keyboard operability, screen reader compatibility, cognitive accessibility, and dynamic content behavior — require additional manual evaluation.</p>
@@ -2686,7 +3018,7 @@ async function exportHTMLReport() {
             <td><strong>${r.sc}</strong></td>
             <td>${escapeHtml(r.name)}</td>
             <td>${r.level}</td>
-            <td>${r.automatedEvidence}</td>
+            <td>${r.automatedEvidence}${r.counts && r.counts.applicable ? `<br><small>${escapeHtml(UCheckCriterionCounts.describeCounts(r.counts))}</small>` : ''}</td>
             <td><strong>${escapeHtml(r.conformanceLevel)}</strong></td>
             <td>${escapeHtml(r.remark || '')}</td>
           </tr>`;
@@ -2697,7 +3029,7 @@ async function exportHTMLReport() {
   <p style="font-size:12px;color:#6b7280;margin-top:12px"><em>The VPAT Readiness Matrix is not an Accessibility Conformance Report and does not make accessibility conformance claims. It identifies available evidence and testing gaps prior to formal VPAT development.</em></p>
 
   <footer style="margin-top:48px;padding-top:16px;border-top:1px solid #e5e7eb;text-align:center;font-size:12px;color:#9ca3af">
-    Generated by Accessiblü WCAG 2.2 Tester &mdash; ${escapeHtml(date)} &mdash; This report is confidential and intended for internal use only.
+    Generated by Ü Check by Accessiblü &mdash; ${escapeHtml(date)} &mdash; This report is confidential and intended for internal use only.
   </footer>
 
 </div>

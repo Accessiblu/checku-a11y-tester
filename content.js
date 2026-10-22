@@ -173,34 +173,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ success: true });
     return false;
   }
-
-  if (request.action === 'startLiveRegionWatch') {
-    sendResponse({ success: true, result: startLiveRegionWatch() });
-    return false;
-  }
-
-  if (request.action === 'getLiveRegionLog') {
-    sendResponse({ success: true, result: getLiveRegionLog() });
-    return false;
-  }
-
-  if (request.action === 'stopLiveRegionWatch') {
-    stopLiveRegionWatch();
-    sendResponse({ success: true });
-    return false;
-  }
-
-  if (request.action === 'getFocusIndicators') {
-    const result = getFocusIndicators();
-    sendResponse({ success: true, result });
-    return false;
-  }
-
-  if (request.action === 'clearFocusIndicators') {
-    clearBadgeGroup('focus');
-    sendResponse({ success: true });
-    return false;
-  }
 });
 
 // ---------------------------------------------------------------------------
@@ -332,135 +304,6 @@ function detectOverlays() {
 }
 
 // ---------------------------------------------------------------------------
-// role="application" review
-//
-// JAWS's own ARIA support documentation calls this out as a named
-// anti-pattern: role="application" hands ALL arrow-key and Escape handling
-// to page JavaScript, disabling the screen reader's normal text-review
-// navigation for that whole region. Correct on a canvas editor or game;
-// silently disabling for a user when misapplied to a block of static text
-// with no visible caret. axe-core has no way to judge "does this region
-// really manage its own keyboard interaction," so this always needs a
-// human — hence it's surfaced as a review item, not a violation.
-// ---------------------------------------------------------------------------
-
-function detectApplicationRegions() {
-  const nodes = [];
-  document.querySelectorAll('[role="application"]').forEach(el => {
-    nodes.push({
-      html: el.outerHTML.substring(0, 200),
-      target: [generateSelector(el)],
-      failureSummary:
-        'role="application" hands arrow-key and Escape handling entirely to page JavaScript. ' +
-        'Confirm this region fully implements its own keyboard interaction model — if it does not ' +
-        '(for example, a block of plain text with no visible caret), remove the role. Screen reader ' +
-        'users otherwise lose the ability to read the region with the arrow keys, with no visual cue ' +
-        'that anything changed.',
-      any: [], all: [], none: []
-    });
-  });
-
-  if (!nodes.length) return null;
-
-  return {
-    id: 'role-application-review',
-    impact: 'moderate',
-    description:
-      'role="application" was found on this page. This role is appropriate only for regions that ' +
-      'implement their own complete keyboard interaction (e.g. a canvas-based editor or game). ' +
-      'Applied to ordinary content, it silently strips a screen reader user\'s ability to review the ' +
-      'region\'s text with the arrow keys.',
-    help: 'role="application" found — verify it manages its own full keyboard interaction',
-    helpUrl: 'https://www.w3.org/TR/wai-aria-1.2/#application',
-    tags: ['cat.keyboard', 'best-practice'],
-    wcagTags: ['wcag211', 'wcag412'],
-    nodes
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Drag interaction review (WCAG 2.5.7 — Dragging Movements)
-//
-// JAWS's own ARIA documentation is explicit that a screen reader only ever
-// narrates a drag operation (grabbable/grabbed/droppable) — it never
-// performs the drag itself, and the keyboard-operable alternative WCAG 2.5.7
-// requires is entirely the page author's responsibility. axe-core can't
-// judge whether that alternative exists or works, so this is a heuristic
-// detector feeding the manual-review queue, not a pass/fail check.
-// ---------------------------------------------------------------------------
-
-const DRAG_LIBRARY_SIGNATURES = [
-  { name: 'Sortable.js',              scriptPatterns: ['sortable.min.js', 'sortable.js', 'sortablejs'], selectors: ['.sortable', '[class*="sortable-"]'] },
-  { name: 'react-beautiful-dnd',      scriptPatterns: ['react-beautiful-dnd'], selectors: ['[data-rbd-droppable-id]', '[data-rbd-draggable-id]'] },
-  { name: 'dnd-kit',                  scriptPatterns: ['dnd-kit'], selectors: ['[data-dnd-kit]'] },
-  { name: 'interact.js',              scriptPatterns: ['interact.min.js', 'interactjs'], selectors: [] },
-  { name: 'jQuery UI Sortable/Draggable', scriptPatterns: ['jquery-ui'], selectors: ['.ui-sortable', '.ui-draggable'] }
-];
-
-function detectDragInteractions() {
-  const nodes = [];
-  const seen = new Set();
-
-  document.querySelectorAll('[draggable="true"]').forEach(el => {
-    if (seen.has(el)) return;
-    seen.add(el);
-    nodes.push({
-      html: el.outerHTML.substring(0, 200),
-      target: [generateSelector(el)],
-      failureSummary:
-        'draggable="true" found. Confirm a full, single-pointer, non-drag alternative exists ' +
-        '(e.g. Move Up / Move Down buttons, a cut-and-paste style flow) and that drag state is ' +
-        'exposed to assistive technology. Screen readers announce drag state — they never perform ' +
-        'the drag or provide the alternative for you.',
-      any: [], all: [], none: []
-    });
-  });
-
-  const scriptSrcs = Array.from(document.querySelectorAll('script[src]'))
-    .map(s => s.getAttribute('src') || '');
-
-  DRAG_LIBRARY_SIGNATURES.forEach(lib => {
-    const scriptMatch = lib.scriptPatterns.find(p =>
-      scriptSrcs.some(src => src.toLowerCase().includes(p.toLowerCase()))
-    );
-    const elementMatch = lib.selectors.find(sel => {
-      try { return document.querySelector(sel); } catch (e) { return false; }
-    });
-    if (!scriptMatch && !elementMatch) return;
-
-    const targetEl = elementMatch ? document.querySelector(elementMatch) : null;
-    if (targetEl && seen.has(targetEl)) return;
-    if (targetEl) seen.add(targetEl);
-
-    nodes.push({
-      html: targetEl ? targetEl.outerHTML.substring(0, 200) : `<!-- ${lib.name} detected via script tag -->`,
-      target: elementMatch ? [elementMatch] : [`script[src*="${scriptMatch}"]`],
-      failureSummary:
-        `${lib.name} drag-and-drop library detected. Confirm a full keyboard alternative and ` +
-        `ARIA drag state (or an APG-compliant pattern) accompany the drag interaction.`,
-      any: [], all: [], none: []
-    });
-  });
-
-  if (!nodes.length) return null;
-
-  return {
-    id: 'drag-interaction-review',
-    impact: 'serious',
-    description:
-      'A drag-and-drop interaction was detected. WCAG 2.5.7 (Dragging Movements) requires every ' +
-      'drag operation to have a single-pointer, non-drag alternative. Screen readers only ever ' +
-      'narrate drag state (grabbable, grabbed, droppable) — they never perform the drag themselves ' +
-      'or supply the required alternative.',
-    help: 'Drag interaction detected — verify a keyboard alternative exists (WCAG 2.5.7)',
-    helpUrl: 'https://www.w3.org/WAI/WCAG22/Understanding/dragging-movements.html',
-    tags: ['cat.sensory-and-visual-cues', 'wcag22aa'],
-    wcagTags: ['wcag257'],
-    nodes
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Main test runner
 // ---------------------------------------------------------------------------
 
@@ -495,26 +338,18 @@ async function runAccessibilityTest(level = 'AA', scope = 'page') {
   const overlayViolations = detectOverlays();
   const violations = [...overlayViolations, ...processResults(results.violations)];
 
-  // Heuristic checks axe-core structurally can't judge on its own — these
-  // always need a human, so they join the manual-review queue rather than
-  // the violations list. See detectApplicationRegions / detectDragInteractions
-  // above for why each one exists. Their rule IDs are also registered against
-  // WCAG 2.1.1 and 2.5.7 in the VPAT Matrix's WCAG_2_2_CRITERIA list.
-  const reviewFindings = [detectApplicationRegions(), detectDragInteractions()].filter(Boolean);
-  const incomplete = [...reviewFindings, ...processResults(results.incomplete)];
-
   return {
     url: window.location.href,
     timestamp: new Date().toISOString(),
     level,
     violations,
     passes: processResults(results.passes),
-    incomplete,
+    incomplete: processResults(results.incomplete),
     inapplicable: processResults(results.inapplicable),
     summary: {
       violations: violations.length,
       passes: results.passes.length,
-      incomplete: incomplete.length,
+      incomplete: results.incomplete.length,
       inapplicable: results.inapplicable.length,
       totalIssues: violations.reduce((sum, v) => sum + v.nodes.length, 0)
     }
@@ -1328,163 +1163,6 @@ function getAriaUsage() {
 
 function clearAriaHighlights() {
   clearBadgeGroup('aria');
-}
-
-// ---------------------------------------------------------------------------
-// Live region audit (WCAG 4.1.3 — Status Messages)
-//
-// A static DOM snapshot — which is all axe-core, and the ARIA Inspector tool
-// above, ever see — cannot tell the difference between a live region that
-// announces updates correctly and one that never fires at all. The classic
-// invisible bug: inserting a fully populated aria-live region in a single
-// paint announces nothing, because nothing "changed" after it existed for
-// the screen reader to notice. Watching the DOM with a MutationObserver, the
-// way an actual screen reader effectively does, is the only way to catch it.
-// ---------------------------------------------------------------------------
-
-const LIVE_REGION_SELECTOR = '[aria-live], [role="status"], [role="alert"], [role="log"]';
-
-let liveRegionObserver = null;
-let liveRegionLog = [];
-
-function snapshotLiveRegions() {
-  return Array.from(document.querySelectorAll(LIVE_REGION_SELECTOR)).map(el => {
-    const liveAttr = el.getAttribute('aria-live');
-    const role = el.getAttribute('role');
-    const politeness = liveAttr || (role === 'alert' ? 'assertive' : (role === 'status' || role === 'log' ? 'polite' : null));
-    const hasContentAlready = el.textContent.trim().length > 0;
-    return {
-      selector: generateSelector(el),
-      role: role || '(aria-live attribute only)',
-      politeness,
-      hasContentAlready,
-      note: hasContentAlready
-        ? 'Already contains text at scan time. If this text was present when the region was created, rather than injected into an already-empty region afterward, screen readers will not announce it.'
-        : ''
-    };
-  });
-}
-
-function startLiveRegionWatch() {
-  stopLiveRegionWatch();
-  liveRegionLog = [];
-
-  liveRegionObserver = new MutationObserver(mutations => {
-    mutations.forEach(m => {
-      const raw = m.target.nodeType === Node.ELEMENT_NODE ? m.target : m.target.parentElement;
-      if (!raw) return;
-      const region = raw.closest(LIVE_REGION_SELECTOR);
-      if (!region) return;
-      liveRegionLog.push({
-        time: new Date().toISOString(),
-        selector: generateSelector(region),
-        newText: region.textContent.trim().substring(0, 150)
-      });
-    });
-  });
-
-  liveRegionObserver.observe(document.body, { childList: true, characterData: true, subtree: true });
-
-  return {
-    watching: true,
-    regionCount: document.querySelectorAll(LIVE_REGION_SELECTOR).length,
-    staticFindings: snapshotLiveRegions()
-  };
-}
-
-function stopLiveRegionWatch() {
-  if (liveRegionObserver) {
-    liveRegionObserver.disconnect();
-    liveRegionObserver = null;
-  }
-}
-
-function getLiveRegionLog() {
-  return {
-    watching: !!liveRegionObserver,
-    log: liveRegionLog,
-    staticFindings: snapshotLiveRegions()
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Focus indicator check (WCAG 2.4.7 / 2.4.11)
-//
-// No screen reader test — JAWS, NVDA, any of them — can ever verify this.
-// They announce "button, focused" whether or not a focus ring is visible;
-// there is no "indicator visible" property anywhere in the accessibility
-// tree for them to read. This has to be checked visually instead, so this
-// walks every focusable element, focuses it, and compares computed style
-// before/after to flag anything with no detectable visual change at all.
-//
-// This briefly moves real focus around the live page — expect visible
-// flicker while it runs, and re-run if a menu or similar control expands
-// on focus and throws off later elements in the same pass.
-// ---------------------------------------------------------------------------
-
-function styleSnapshot(el) {
-  const s = window.getComputedStyle(el);
-  return {
-    outlineStyle: s.outlineStyle,
-    outlineWidth: s.outlineWidth,
-    outlineColor: s.outlineColor,
-    boxShadow: s.boxShadow,
-    borderColor: s.borderColor,
-    borderWidth: s.borderWidth,
-    backgroundColor: s.backgroundColor
-  };
-}
-
-function getFocusIndicators() {
-  clearBadgeGroup('focus');
-
-  const previouslyFocused = document.activeElement;
-  const candidates = Array.from(document.querySelectorAll(FOCUSABLE)).filter(el => {
-    const ti = parseInt(el.getAttribute('tabindex'), 10);
-    return (isNaN(ti) || ti >= 0) && isVisible(el);
-  });
-
-  const found = candidates.map(el => {
-    let before, after;
-    try {
-      before = styleSnapshot(el);
-      el.focus({ preventScroll: true });
-      after = styleSnapshot(el);
-      el.blur();
-    } catch (e) {
-      return null;
-    }
-
-    const changed = JSON.stringify(before) !== JSON.stringify(after);
-    const outlineSuppressed = after.outlineStyle === 'none' || parseFloat(after.outlineWidth) === 0;
-
-    return {
-      tag: el.tagName.toLowerCase(),
-      text: (el.innerText || el.getAttribute('aria-label') || el.getAttribute('value') || '').trim().substring(0, 40),
-      selector: generateSelector(el),
-      hasIndicator: changed,
-      note: changed
-        ? ''
-        : outlineSuppressed
-          ? 'outline suppressed (outline: none) with no alternative focus style detected'
-          : 'No visible style change detected on focus'
-    };
-  }).filter(Boolean);
-
-  try { previouslyFocused && previouslyFocused.focus && previouslyFocused.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
-
-  const missing = found.filter(f => !f.hasIndicator);
-  missing.forEach(f => {
-    try {
-      const el = document.querySelector(f.selector);
-      if (el) injectBadge(el, 'no focus style ⚠', '#dc2626', 'focus');
-    } catch (e) { /* bad selector — skip */ }
-  });
-
-  return {
-    elements: found,
-    summary: { total: found.length, missing: missing.length }
-  };
 }
 
 // ---------------------------------------------------------------------------

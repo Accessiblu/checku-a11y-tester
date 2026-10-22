@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Accessiblü: WCAG Accessibility Audit + VPAT</title>
+  <title>Ü Check: WCAG Accessibility Audit + VPAT</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
@@ -21,7 +21,7 @@
   <div class="container">
     <header>
       <div class="header-top">
-        <h1>Accessiblü: WCAG Accessibility Audit + VPAT</h1>
+        <h1 aria-label="U Check: WCAG Accessibility Audit + VPAT">Ü Check: WCAG Accessibility Audit + VPAT</h1>
         <button id="expandBtn" class="expand-btn"
                 aria-label="Pop out into a resizable floating window">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
@@ -124,10 +124,15 @@
                   data-tab="vpat">
             VPAT Matrix
           </button>
-          <button role="tab" id="tab-pulse" class="tab-btn"
-                  aria-selected="false" aria-controls="pulseTab" tabindex="-1"
-                  data-tab="pulse">
-            Pulse
+          <button role="tab" id="tab-guided" class="tab-btn"
+                  aria-selected="false" aria-controls="guidedTab" tabindex="-1"
+                  data-tab="guided">
+            Guided Audit
+          </button>
+          <button role="tab" id="tab-monitor" class="tab-btn"
+                  aria-selected="false" aria-controls="monitorTab" tabindex="-1"
+                  data-tab="monitor">
+            <span aria-hidden="true">Ü Monitor</span><span class="sr-only">U Monitor</span>
           </button>
         </div>
 
@@ -148,20 +153,24 @@
 
           <div class="tools-grid">
             <div class="tool-cell">
-              <button id="landmarksBtn" class="tool-btn" aria-pressed="false">Show Landmarks</button>
-              <span id="landmarksStatus" class="tool-status" aria-live="polite"></span>
+              <button id="tabOrderBtn" class="tool-btn" aria-pressed="false">Show Tab Order</button>
+              <span id="tabOrderStatus" class="tool-status" aria-live="polite"></span>
             </div>
             <div class="tool-cell">
               <button id="headingsBtn" class="tool-btn" aria-pressed="false">Show Headings</button>
               <span id="headingsStatus" class="tool-status" aria-live="polite"></span>
             </div>
             <div class="tool-cell">
-              <button id="listsBtn" class="tool-btn" aria-pressed="false">Show Lists</button>
-              <span id="listsStatus" class="tool-status" aria-live="polite"></span>
-            </div>
-            <div class="tool-cell">
               <button id="imageAltBtn" class="tool-btn" aria-pressed="false">Inspect Images</button>
               <span id="imageAltStatus" class="tool-status" aria-live="polite"></span>
+            </div>
+            <div class="tool-cell">
+              <button id="landmarksBtn" class="tool-btn" aria-pressed="false">Show Landmarks</button>
+              <span id="landmarksStatus" class="tool-status" aria-live="polite"></span>
+            </div>
+            <div class="tool-cell">
+              <button id="listsBtn" class="tool-btn" aria-pressed="false">Show Lists</button>
+              <span id="listsStatus" class="tool-status" aria-live="polite"></span>
             </div>
             <div class="tool-cell">
               <button id="iconsBtn" class="tool-btn" aria-pressed="false">Show Icons</button>
@@ -172,10 +181,6 @@
               <span id="navsStatus" class="tool-status" aria-live="polite"></span>
             </div>
             <div class="tool-cell">
-              <button id="tabOrderBtn" class="tool-btn" aria-pressed="false">Show Tab Order</button>
-              <span id="tabOrderStatus" class="tool-status" aria-live="polite"></span>
-            </div>
-            <div class="tool-cell">
               <button id="contrastBtn" class="tool-btn" aria-pressed="false">Color Contrast</button>
               <span id="contrastStatus" class="tool-status" aria-live="polite"></span>
             </div>
@@ -184,27 +189,22 @@
               <span id="ariaStatus" class="tool-status" aria-live="polite"></span>
             </div>
             <div class="tool-cell">
-              <button id="focusBtn" class="tool-btn" aria-pressed="false">Check Focus Indicators</button>
-              <span id="focusStatus" class="tool-status" aria-live="polite"></span>
-            </div>
-            <div class="tool-cell">
-              <button id="liveRegionBtn" class="tool-btn" aria-pressed="false">Watch Live Regions</button>
-              <span id="liveRegionStatus" class="tool-status" aria-live="polite"></span>
+              <button id="inventoryBtn" class="tool-btn" aria-pressed="false">Element Inventory</button>
+              <span id="inventoryStatus" class="tool-status" aria-live="polite"></span>
             </div>
           </div>
 
           <!-- Tool result panels (hidden until activated) -->
-          <div id="landmarksPanel"   class="tool-panel hidden" aria-live="polite"></div>
-          <div id="headingsPanel"    class="tool-panel hidden" aria-live="polite"></div>
-          <div id="listsPanel"       class="tool-panel hidden" aria-live="polite"></div>
-          <div id="imageAltPanel"    class="tool-panel hidden" aria-live="polite"></div>
-          <div id="iconsPanel"       class="tool-panel hidden" aria-live="polite"></div>
-          <div id="navsPanel"        class="tool-panel hidden" aria-live="polite"></div>
-          <div id="tabOrderPanel"    class="tool-panel hidden" aria-live="polite"></div>
-          <div id="contrastPanel"    class="tool-panel hidden" aria-live="polite"></div>
-          <div id="ariaPanel"        class="tool-panel hidden" aria-live="polite"></div>
-          <div id="focusPanel"       class="tool-panel hidden" aria-live="polite"></div>
-          <div id="liveRegionPanel"  class="tool-panel hidden" aria-live="polite"></div>
+          <div id="tabOrderPanel"  class="tool-panel hidden" aria-live="polite"></div>
+          <div id="headingsPanel"  class="tool-panel hidden" aria-live="polite"></div>
+          <div id="imageAltPanel"  class="tool-panel hidden" aria-live="polite"></div>
+          <div id="landmarksPanel" class="tool-panel hidden" aria-live="polite"></div>
+          <div id="listsPanel"     class="tool-panel hidden" aria-live="polite"></div>
+          <div id="iconsPanel"     class="tool-panel hidden" aria-live="polite"></div>
+          <div id="navsPanel"      class="tool-panel hidden" aria-live="polite"></div>
+          <div id="contrastPanel"  class="tool-panel hidden" aria-live="polite"></div>
+          <div id="ariaPanel"      class="tool-panel hidden" aria-live="polite"></div>
+          <div id="inventoryPanel" class="tool-panel hidden"></div>
 
         </div>
 
@@ -217,49 +217,64 @@
           </div>
         </div>
 
-        <div role="tabpanel" id="pulseTab" aria-labelledby="tab-pulse" tabindex="0" class="tab-content hidden">
-          <div id="pulseConnectSection">
-            <h3>Connect to Accessiblü Pulse</h3>
-            <p class="pulse-hint">
-              Generate a token in Pulse under <strong>Extension</strong>, then paste it here.
+        <div role="tabpanel" id="guidedTab" aria-labelledby="tab-guided" tabindex="0" class="tab-content hidden">
+          <h3>Guided audit</h3>
+          <p class="monitor-hint">A checklist for the page you are on. Answer each check for each group of elements, and your answers are saved to Ü Monitor. Sign in on the Ü Monitor tab first, and send the Element Inventory so links, buttons and forms are included.</p>
+          <button id="guidedLoadBtn" class="primary-btn">Load the checklist for this page</button>
+          <p id="guidedLoadStatus" class="tool-status" role="status"></p>
+          <div id="guidedBody"></div>
+        </div>
+
+        <div role="tabpanel" id="monitorTab" aria-labelledby="tab-monitor" tabindex="0" class="tab-content hidden">
+          <div id="monitorConnectSection">
+            <h3>Connect to <span aria-hidden="true">Ü Monitor</span><span class="sr-only">U Monitor</span></h3>
+            <p class="monitor-hint">
+              Sign in with your Ü Monitor account. Your password is sent only to the sign-in service and is not stored.
             </p>
             <div class="control">
-              <label for="pulseTokenInput">Pulse API token:</label>
-              <input type="password" id="pulseTokenInput" autocomplete="off"
-                     placeholder="pulse_…">
+              <label for="monitorUrlInput">Ü Monitor server:</label>
+              <input type="text" id="monitorUrlInput" autocomplete="off" value="http://localhost:3000/api/v1">
             </div>
             <div class="control">
-              <label for="pulseUrlInput">Pulse URL:</label>
-              <input type="text" id="pulseUrlInput" autocomplete="off"
-                     value="http://localhost:3000">
+              <label for="monitorEmailInput">Email:</label>
+              <input type="email" id="monitorEmailInput" autocomplete="username">
             </div>
-            <button id="pulseConnectBtn" class="primary-btn">Connect</button>
-            <p id="pulseConnectStatus" class="tool-status" aria-live="polite"></p>
+            <div class="control">
+              <label for="monitorPasswordInput">Password:</label>
+              <input type="password" id="monitorPasswordInput" autocomplete="current-password">
+            </div>
+            <button id="monitorConnectBtn" class="primary-btn">Connect</button>
+            <p id="monitorConnectStatus" class="tool-status" aria-live="polite"></p>
           </div>
 
-          <div id="pulseSendSection" class="hidden">
-            <div class="pulse-connected-row">
-              <span id="pulseConnectedAs"></span>
-              <button id="pulseDisconnectBtn" class="back-btn">Disconnect</button>
+          <div id="monitorSendSection" class="hidden">
+            <div class="monitor-connected-row">
+              <span id="monitorConnectedAs"></span>
+              <button id="monitorDisconnectBtn" class="back-btn">Disconnect</button>
             </div>
 
-            <h3>Send this page&#39;s VPAT verdicts</h3>
-            <p class="pulse-hint">
-              Sends every criterion with a recorded conformance level in the VPAT Matrix tab into that
-              page&#39;s Pulse testing workspace.
-            </p>
+            <h3>Send this page&#39;s results</h3>
+            <div id="monitorMatchStatus" class="tool-status" aria-live="polite"></div>
 
-            <div id="pulseMatchStatus" class="tool-status" aria-live="polite"></div>
-
-            <div id="pulseMatchPicker" class="control hidden">
-              <label for="pulseWebsiteSelect">Website:</label>
-              <select id="pulseWebsiteSelect"></select>
-              <label for="pulseAuditSelect">Audit:</label>
-              <select id="pulseAuditSelect"></select>
+            <div id="monitorMatchPicker" class="control hidden">
+              <label for="monitorPropertySelect">Website:</label>
+              <select id="monitorPropertySelect"></select>
+              <label for="monitorAuditSelect">Audit:</label>
+              <select id="monitorAuditSelect"></select>
             </div>
 
-            <button id="pulseSendBtn" class="primary-btn" disabled>Send to Pulse</button>
-            <p id="pulseSendStatus" class="tool-status" aria-live="polite"></p>
+            <p id="monitorPageStatus" class="monitor-hint"></p>
+
+            <div class="monitor-send-list">
+              <button id="monitorSendScanBtn" class="primary-btn" disabled>Send automated scan results</button>
+              <button id="monitorSendInventoryBtn" class="primary-btn" disabled>Send element inventory</button>
+              <button id="monitorSendVerdictsBtn" class="primary-btn" disabled>Send VPAT Matrix verdicts</button>
+              <button id="monitorPlanBtn" class="primary-btn" disabled aria-describedby="monitorPlanHint">Plan this page with AI</button>
+            </div>
+            <p id="monitorPlanHint" class="monitor-hint">Needs the Element Inventory. Sends the inventory to Ü Monitor and asks Claude (made by Anthropic) for a draft checklist. Works only when the client has turned AI features on. It only suggests.</p>
+            <div id="monitorPlanPanel" class="monitor-plan hidden" tabindex="-1"></div>
+            <p class="monitor-hint">A button is available once you have run that test: Run Test, Element Inventory, or set levels in the VPAT Matrix.</p>
+            <p id="monitorSendStatus" class="tool-status" aria-live="polite"></p>
           </div>
         </div>
 
@@ -299,10 +314,15 @@
     </main>
 
     <footer>
-      <p>Powered by axe-core | WCAG 2.2 — v1.6.0</p>
+      <p>Ü Check <span id="extVersion"></span> | Powered by axe-core | WCAG 2.2</p>
     </footer>
   </div>
 
+  <script src="conformance.js"></script>
+  <script src="criterion-counts.js"></script>
+  <script src="inventory-report.js"></script>
+  <script src="monitor-client.js"></script>
+  <script src="guided-audit.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
